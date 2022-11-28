@@ -31,6 +31,12 @@ def parse_args():
         help="Number of samples in dataset. Required for webdataset if not available in info file.",
     )
     parser.add_argument(
+        "--lora",
+        type=int,
+        default=-1,
+        help="lora rank",
+    )
+    parser.add_argument(
         "--val-num-samples",
         type=int,
         default=None,
@@ -138,6 +144,9 @@ def parse_args():
     )
     parser.add_argument(
         "--val-frequency", type=int, default=1, help="How often to run evaluation with val data."
+    )
+    parser.add_argument(
+        "--vlchecklist-frequency", type=int, default=4, help="How often to run evaluation with VL-CheckList."
     )
     parser.add_argument(
         "--resume",

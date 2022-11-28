@@ -17,11 +17,19 @@ from torch.utils.checkpoint import checkpoint
 from .timm_model import TimmModel
 from .utils import freeze_batch_norm_2d, to_2tuple
 
+import functools
+from operator import mul
+
+from torch.nn.modules.utils import _pair
+
+from .loralib import layers as lora_layers
+from .loralib.utils import mark_only_lora_as_trainable
+
 
 class Bottleneck(nn.Module):
     expansion = 4
 
-    def __init__(self, inplanes, planes, stride=1):
+    def __init__(self, inplanes, planes, stride=1, lora=-1):
         super().__init__()
 
         # all conv layers have stride 1. an avgpool is performed after the second convolution when stride > 1
@@ -294,6 +302,7 @@ class ResidualAttentionBlock(nn.Module):
             scale_heads: bool = False,
             scale_attn: bool = False,
             scale_fc: bool = False,
+            lora: int = -1
     ):
         super().__init__()
 
@@ -305,17 +314,29 @@ class ResidualAttentionBlock(nn.Module):
         #        scaled_cosine=scale_cosine_attn,
         #        scale_heads=scale_heads,
         #     )
-        self.attn = nn.MultiheadAttention(d_model, n_head)
+        if lora <= 0:
+            self.attn = nn.MultiheadAttention(d_model, n_head)
+        else:
+            self.attn = lora_layers.MultiheadAttention(d_model, n_head, r=lora)
         self.ln_attn = LayerNorm(d_model) if scale_attn else nn.Identity()
 
         self.ln_2 = LayerNorm(d_model)
         mlp_width = int(d_model * mlp_ratio)
-        self.mlp = nn.Sequential(OrderedDict([
-            ("c_fc", nn.Linear(d_model, mlp_width)),
-            ('ln', LayerNorm(mlp_width) if scale_fc else nn.Identity()),
-            ("gelu", act_layer()),
-            ("c_proj", nn.Linear(mlp_width, d_model))
-        ]))
+        if lora <= 0 :
+            self.mlp = nn.Sequential(OrderedDict([
+                ("c_fc", nn.Linear(d_model, mlp_width)),
+                ('ln', LayerNorm(mlp_width) if scale_fc else nn.Identity()),
+                ("gelu", act_layer()),
+                ("c_proj", nn.Linear(mlp_width, d_model))
+            ]))
+        else:
+            self.mlp = nn.Sequential(OrderedDict([
+                ("c_fc", lora_layers.Linear(d_model, mlp_width, r=lora)),
+                ('ln', LayerNorm(mlp_width) if scale_fc else nn.Identity()),
+                ("gelu", act_layer()),
+                ("c_proj", lora_layers.Linear(mlp_width, d_model, r=lora))
+            ]))
+            
 
     def attention(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None):
         return self.attn(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
@@ -331,15 +352,16 @@ class ResidualAttentionBlock(nn.Module):
         return x
 
 
+
 class Transformer(nn.Module):
-    def __init__(self, width: int, layers: int, heads: int,  mlp_ratio: float = 4.0, act_layer: Callable = nn.GELU):
+    def __init__(self, width: int, layers: int, heads: int,  mlp_ratio: float = 4.0, act_layer: Callable = nn.GELU, lora: int = -1):
         super().__init__()
         self.width = width
         self.layers = layers
         self.grad_checkpointing = False
 
         self.resblocks = nn.ModuleList([
-            ResidualAttentionBlock(width, heads, mlp_ratio, act_layer=act_layer)
+            ResidualAttentionBlock(width, heads, mlp_ratio, act_layer=act_layer, lora=lora)
             for _ in range(layers)
         ])
 
@@ -362,7 +384,8 @@ class VisualTransformer(nn.Module):
             heads: int,
             mlp_ratio: float,
             output_dim: int,
-            act_layer: Callable = nn.GELU
+            act_layer: Callable = nn.GELU,
+            lora: int = -1
     ):
         super().__init__()
         self.image_size = to_2tuple(image_size)
@@ -370,16 +393,23 @@ class VisualTransformer(nn.Module):
         self.grid_size = (self.image_size[0] // self.patch_size[0], self.image_size[1] // self.patch_size[1])
         self.output_dim = output_dim
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False)
+        self.num_tokens = 8
 
         scale = width ** -0.5
         self.class_embedding = nn.Parameter(scale * torch.randn(width))
         self.positional_embedding = nn.Parameter(scale * torch.randn(self.grid_size[0] * self.grid_size[1] + 1, width))
         self.ln_pre = LayerNorm(width)
 
-        self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer)
+        self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=-1)
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
+        self.num_tokens = 4
+        val = math.sqrt(6. / float(3 * functools.reduce(mul, _pair(patch_size), 1) + width))  #prompt init per visual prompt tuning
+
+        self.prompts = nn.Parameter(torch.zeros(1, self.num_tokens, width))
+        # xavier_uniform initialization
+        nn.init.uniform_(self.prompts, -val, val) 
 
     def lock(self, unlocked_groups=0, freeze_bn_stats=False):
         assert unlocked_groups == 0, 'partial locking not currently supported for this model'
@@ -399,6 +429,8 @@ class VisualTransformer(nn.Module):
              x], dim=1)  # shape = [*, grid ** 2 + 1, width]
         x = x + self.positional_embedding.to(x.dtype)
         x = self.ln_pre(x)
+
+        x = torch.cat([x[:, :1, :],self.prompts.expand(x.shape[0], -1, -1),x[:, 1:, :]], dim=1)
 
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
@@ -442,6 +474,7 @@ class CLIP(nn.Module):
             vision_cfg: CLIPVisionCfg,
             text_cfg: CLIPTextCfg,
             quick_gelu: bool = False,
+            lora: int = -1
     ):
         super().__init__()
         if isinstance(vision_cfg, dict):
@@ -493,6 +526,7 @@ class CLIP(nn.Module):
             layers=text_cfg.layers,
             heads=text_cfg.heads,
             act_layer=act_layer,
+            lora=lora
         )
 
         self.vocab_size = text_cfg.vocab_size
@@ -599,7 +633,7 @@ def convert_weights_to_fp16(model: nn.Module):
     model.apply(_convert_weights_to_fp16)
 
 
-def build_model_from_openai_state_dict(state_dict: dict):
+def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1):
     vit = "visual.proj" in state_dict
 
     if vit:
@@ -644,13 +678,14 @@ def build_model_from_openai_state_dict(state_dict: dict):
         vision_cfg=vision_cfg,
         text_cfg=text_cfg,
         quick_gelu=True,  # OpenAI models were trained with QuickGELU
+        lora=lora
     )
 
     for key in ["input_resolution", "context_length", "vocab_size"]:
         state_dict.pop(key, None)
 
     convert_weights_to_fp16(model)
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=False)
     return model.eval()
 
 

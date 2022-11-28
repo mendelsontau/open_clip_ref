@@ -70,6 +70,7 @@ def create_model(
         model_name: str,
         pretrained: str = '',
         precision: str = 'fp32',
+        lora: int = -1,
         device: torch.device = torch.device('cpu'),
         jit: bool = False,
         force_quick_gelu: bool = False,
@@ -80,7 +81,7 @@ def create_model(
 
     if pretrained.lower() == 'openai':
         logging.info(f'Loading pretrained {model_name} from OpenAI.')
-        model = load_openai_model(model_name, device=device, jit=jit, cache_dir=cache_dir)
+        model = load_openai_model(model_name, lora=lora, device=device, jit=jit, cache_dir=cache_dir)
         # See https://discuss.pytorch.org/t/valueerror-attemting-to-unscale-fp16-gradients/81372
         if precision == "amp" or precision == "fp32":
             model = model.float()
@@ -139,6 +140,7 @@ def create_model(
 def create_model_and_transforms(
         model_name: str,
         pretrained: str = '',
+        lora: int = -1,
         precision: str = 'fp32',
         device: torch.device = torch.device('cpu'),
         jit: bool = False,
@@ -149,7 +151,7 @@ def create_model_and_transforms(
         cache_dir: Optional[str] = None,
 ):
     model = create_model(
-        model_name, pretrained, precision, device, jit,
+        model_name, pretrained, precision, lora, device, jit,
         force_quick_gelu=force_quick_gelu,
         pretrained_image=pretrained_image,
         cache_dir=cache_dir)

@@ -23,13 +23,16 @@ try:
 except ImportError:
     hvd = None
 
-from open_clip import create_model_and_transforms, trace_model
+from open_clip import create_model_and_transforms, trace_model, mark_only_lora_as_trainable 
 from training.data import get_data
 from training.distributed import is_master, init_distributed_device, world_info_from_env
 from training.logger import setup_logging
 from training.params import parse_args
 from training.scheduler import cosine_lr
 from training.train import train_one_epoch, evaluate
+
+from VL_CheckList.example_models.open_clip.engine import OPEN_CLIP
+from VL_CheckList.vl_checklist.evaluate import Evaluate
 
 
 def random_seed(seed=42, rank=0):
@@ -122,6 +125,7 @@ def main():
     model, preprocess_train, preprocess_val = create_model_and_transforms(
         args.model,
         args.pretrained,
+        args.lora,
         precision=args.precision,
         device=device,
         jit=args.torchscript,
@@ -140,6 +144,18 @@ def main():
         model.lock_image_tower(
             unlocked_groups=args.lock_image_unlocked_groups,
             freeze_bn_stats=args.lock_image_freeze_bn_stats)
+    if args.lora >= 0:
+        mark_only_lora_as_trainable(model)
+        model.visual.prompts.requires_grad_()
+    else:
+        for param in model.parameters():
+            param.requires_grad = False
+    
+        model.visual.prompts.requires_grad_()
+
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print (name)
 
     if args.grad_checkpointing:
         model.set_grad_checkpointing()
@@ -255,6 +271,10 @@ def main():
 
     if 'train' not in data:
         evaluate(model, data, start_epoch, args, writer)
+        if args.vlchecklist_frequency > 0:
+            vl_model = OPEN_CLIP(f'epoch {start_epoch}',model, preprocess_val)
+            vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
+            vl_eval.start()
         return
 
     for epoch in range(start_epoch, args.epochs):
@@ -266,6 +286,10 @@ def main():
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):
             evaluate(model, data, completed_epoch, args, writer)
+            if args.vlchecklist_frequency > 0 and completed_epoch % args.vlchecklist_frequency == 0:
+                vl_model = OPEN_CLIP(f'epoch {start_epoch}',model, preprocess_val)
+                vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
+                vl_eval.start()
 
         # Saving checkpoints.
         if args.save_logs:

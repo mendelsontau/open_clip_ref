@@ -43,8 +43,13 @@ class CsvDataset(Dataset):
         return len(self.captions)
 
     def __getitem__(self, idx):
-        images = self.transforms(Image.open(str(self.images[idx])))
-        texts = tokenize([str(self.captions[idx])])[0]
+        try:
+            images = self.transforms(Image.open(os.path.join("../../open_clip/src",str(self.images[idx]))))
+            texts = tokenize([str(self.captions[idx])])[0]
+        except:
+            idx += 1
+            images = self.transforms(Image.open(os.path.join("../../open_clip/src",str(self.images[idx]))))
+            texts = tokenize([str(self.captions[idx])])[0]
         return images, texts
 
 
