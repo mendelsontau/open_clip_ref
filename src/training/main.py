@@ -2,6 +2,7 @@ import logging
 import os
 import random
 from datetime import datetime
+import sys
 
 import numpy as np
 import torch
@@ -23,13 +24,16 @@ try:
 except ImportError:
     hvd = None
 
+sys.path.insert(0, "/home/gamir/DER-Roei/alon/open_clip_ref/src")
+
+
 from open_clip import create_model_and_transforms, trace_model, mark_only_lora_as_trainable 
 from training.data import get_data
 from training.distributed import is_master, init_distributed_device, world_info_from_env
 from training.logger import setup_logging
 from training.params import parse_args
 from training.scheduler import cosine_lr
-from training.train import train_one_epoch, evaluate
+from training.train import train_one_epoch, evaluate, evaluate_winoground
 
 from VL_CheckList.example_models.open_clip.engine import OPEN_CLIP
 from VL_CheckList.vl_checklist.evaluate import Evaluate
@@ -126,6 +130,7 @@ def main():
         args.model,
         args.pretrained,
         args.lora,
+        args.prompt_tokens,
         precision=args.precision,
         device=device,
         jit=args.torchscript,
@@ -146,12 +151,14 @@ def main():
             freeze_bn_stats=args.lock_image_freeze_bn_stats)
     if args.lora >= 0:
         mark_only_lora_as_trainable(model)
-        model.visual.prompts.requires_grad_()
+        if args.prompt_tokens > 0:
+            model.visual.prompts.requires_grad_()
     else:
         for param in model.parameters():
             param.requires_grad = False
     
-        model.visual.prompts.requires_grad_()
+        if args.prompt_tokens > 0:
+            model.visual.prompts.requires_grad_()
 
     for name, param in model.named_parameters():
         if param.requires_grad:
@@ -275,6 +282,8 @@ def main():
             vl_model = OPEN_CLIP(f'epoch {start_epoch}',model, preprocess_val)
             vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
             vl_eval.start()
+        if args.winoground_frequency > 0:
+            evaluate_winoground(model, preprocess_val, start_epoch, args, writer)
         return
 
     for epoch in range(start_epoch, args.epochs):
@@ -290,6 +299,8 @@ def main():
                 vl_model = OPEN_CLIP(f'epoch {start_epoch}',model, preprocess_val)
                 vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
                 vl_eval.start()
+            if args.winoground_frequency > 0 and completed_epoch % args.winoground_frequency == 0:
+                evaluate_winoground(model, preprocess_val, completed_epoch, args, writer)
 
         # Saving checkpoints.
         if args.save_logs:

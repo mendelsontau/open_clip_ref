@@ -13,10 +13,13 @@ try:
 except ImportError:
     wandb = None
 
-from open_clip import ClipLoss
+from open_clip import ClipLoss, tokenize
 from .distributed import is_master
 from .zero_shot import zero_shot_eval
 from .precision import get_autocast
+
+from datasets import load_dataset
+from tqdm import tqdm
 
 
 class AverageMeter(object):
@@ -236,6 +239,85 @@ def evaluate(model, data, epoch, args, tb_writer=None):
 
     return metrics
 
+def evaluate_winoground(model, clip_processor, epoch, args, tb_writer=None):
+    model.eval()
+    metrics = {}
+    #if not is_master(args):
+    #    return metrics
+    auth_token = "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"
+    winoground = load_dataset("facebook/winoground", use_auth_token=auth_token)["test"]
+    winoground_clip_scores = []
+    for example in tqdm(winoground):
+    # Note that some images in winoground are RGBA and some are RGB. Need to convert all to RGB with .convert('RGB')
+    # Note that we could run this example through CLIP as a batch, but I want to drive the point home that we get four independent image-caption scores for each example
+        image0 = clip_processor(example["image_0"].convert("RGB")).unsqueeze(0)
+        image1 = clip_processor(example["image_1"].convert("RGB")).unsqueeze(0)
+        images = torch.cat([image0,image1],dim=0)
+        caption0 = tokenize(example["caption_0"])[0].unsqueeze(0)
+        caption1 = tokenize(example["caption_1"])[0].unsqueeze(0)
+        captions = torch.cat([caption0,caption1],dim=0)
+        images = images.to(args.device, non_blocking=True)
+        captions = captions.to(args.device, non_blocking=True)
+        image_features, text_features, logit_scale = model(images, captions)
+        logit_scale = logit_scale.mean()
+        logits_per_image = logit_scale * image_features @ text_features.t()
+        logits_per_image = logits_per_image.detach().cpu()
+        clip_score_c0_i0 = logits_per_image[0,0].item()
+        clip_score_c1_i0 = logits_per_image[0,1].item()
+        clip_score_c0_i1 = logits_per_image[1,0].item()
+        clip_score_c1_i1 = logits_per_image[1,1].item()
+        winoground_clip_scores.append({"id" : example["id"], "c0_i0": clip_score_c0_i0, "c0_i1": clip_score_c0_i1, "c1_i0": clip_score_c1_i0, "c1_i1": clip_score_c1_i1})
+    
+    def text_correct(result):
+        return result["c0_i0"] > result["c1_i0"] and result["c1_i1"] > result["c0_i1"]
+
+    def image_correct(result):
+        return result["c0_i0"] > result["c0_i1"] and result["c1_i1"] > result["c1_i0"]
+
+    def group_correct(result):
+        return image_correct(result) and text_correct(result)
+
+    text_correct_count = 0
+    image_correct_count = 0
+    group_correct_count = 0
+    for result in winoground_clip_scores:
+        text_correct_count += 1 if text_correct(result) else 0
+        image_correct_count += 1 if image_correct(result) else 0
+        group_correct_count += 1 if group_correct(result) else 0
+
+    denominator = len(winoground_clip_scores)
+    winoground_text_score = text_correct_count/denominator
+    winoground_image_score = image_correct_count/denominator
+    winoground_group_score = group_correct_count/denominator
+
+    metrics.update({"winoground_text_score": text_correct_count/denominator, 
+    "winoground_image_score": image_correct_count/denominator,
+    "winoground_group_score": group_correct_count/denominator,
+     "epoch": epoch})
+
+    if not metrics:
+        return metrics
+
+    logging.info(
+        f"winoground Eval Epoch: {epoch} "
+        + "\t".join([f"{k}: {round(v, 4):.4f}" for k, v in metrics.items()])
+    )
+
+    if args.save_logs:
+        for name, val in metrics.items():
+            if tb_writer is not None:
+                tb_writer.add_scalar(f"val/{name}", val, epoch)
+
+        with open(os.path.join(args.checkpoint_path, "results.jsonl"), "a+") as f:
+            f.write(json.dumps(metrics))
+            f.write("\n")
+
+    if args.wandb:
+        assert wandb is not None, 'Please install wandb.'
+        for name, val in metrics.items():
+            wandb.log({f"val/{name}": val, 'epoch': epoch})
+
+    return metrics
 
 def get_metrics(image_features, text_features, logit_scale):
     metrics = {}

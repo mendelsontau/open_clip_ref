@@ -23,6 +23,7 @@ def list_openai_models() -> List[str]:
 def load_openai_model(
         name: str,
         lora: int = -1,
+        prompt_tokens: int = 0,
         device: Union[str, torch.device] = "cuda" if torch.cuda.is_available() else "cpu",
         jit=True,
         cache_dir=None,
@@ -67,7 +68,7 @@ def load_openai_model(
 
     if not jit:
         try:
-            model = build_model_from_openai_state_dict(state_dict or model.state_dict(), lora=lora).to(device)
+            model = build_model_from_openai_state_dict(state_dict or model.state_dict(), lora=lora, prompt_tokens=prompt_tokens).to(device)
         except KeyError:
             sd = {k[7:]: v for k, v in state_dict["state_dict"].items()}
             model = build_model_from_openai_state_dict(sd).to(device)

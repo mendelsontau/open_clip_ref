@@ -37,6 +37,12 @@ def parse_args():
         help="lora rank",
     )
     parser.add_argument(
+        "--prompt-tokens",
+        type=int,
+        default=-0,
+        help="number of prompt tokens",
+    )
+    parser.add_argument(
         "--val-num-samples",
         type=int,
         default=None,
@@ -147,6 +153,9 @@ def parse_args():
     )
     parser.add_argument(
         "--vlchecklist-frequency", type=int, default=4, help="How often to run evaluation with VL-CheckList."
+    )
+    parser.add_argument(
+        "--winoground-frequency", type=int, default=4, help="How often to run evaluation with VL-CheckList."
     )
     parser.add_argument(
         "--resume",

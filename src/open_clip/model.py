@@ -385,6 +385,7 @@ class VisualTransformer(nn.Module):
             mlp_ratio: float,
             output_dim: int,
             act_layer: Callable = nn.GELU,
+            prompt_tokens: int = 0,
             lora: int = -1
     ):
         super().__init__()
@@ -393,7 +394,7 @@ class VisualTransformer(nn.Module):
         self.grid_size = (self.image_size[0] // self.patch_size[0], self.image_size[1] // self.patch_size[1])
         self.output_dim = output_dim
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False)
-        self.num_tokens = 8
+        self.num_tokens = prompt_tokens
 
         scale = width ** -0.5
         self.class_embedding = nn.Parameter(scale * torch.randn(width))
@@ -404,12 +405,12 @@ class VisualTransformer(nn.Module):
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
-        self.num_tokens = 4
-        val = math.sqrt(6. / float(3 * functools.reduce(mul, _pair(patch_size), 1) + width))  #prompt init per visual prompt tuning
+        if self.num_tokens > 0:
+            val = math.sqrt(6. / float(3 * functools.reduce(mul, _pair(patch_size), 1) + width))  #prompt init per visual prompt tuning
 
-        self.prompts = nn.Parameter(torch.zeros(1, self.num_tokens, width))
-        # xavier_uniform initialization
-        nn.init.uniform_(self.prompts, -val, val) 
+            self.prompts = nn.Parameter(torch.zeros(1, self.num_tokens, width))
+            # xavier_uniform initialization
+            nn.init.uniform_(self.prompts, -val, val) 
 
     def lock(self, unlocked_groups=0, freeze_bn_stats=False):
         assert unlocked_groups == 0, 'partial locking not currently supported for this model'
@@ -430,7 +431,8 @@ class VisualTransformer(nn.Module):
         x = x + self.positional_embedding.to(x.dtype)
         x = self.ln_pre(x)
 
-        x = torch.cat([x[:, :1, :],self.prompts.expand(x.shape[0], -1, -1),x[:, 1:, :]], dim=1)
+        if self.num_tokens > 0:
+            x = torch.cat([x[:, :1, :],self.prompts.expand(x.shape[0], -1, -1),x[:, 1:, :]], dim=1)
 
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
@@ -474,7 +476,8 @@ class CLIP(nn.Module):
             vision_cfg: CLIPVisionCfg,
             text_cfg: CLIPTextCfg,
             quick_gelu: bool = False,
-            lora: int = -1
+            lora: int = -1,
+            prompt_tokens: int = 0
     ):
         super().__init__()
         if isinstance(vision_cfg, dict):
@@ -519,6 +522,7 @@ class CLIP(nn.Module):
                 mlp_ratio=vision_cfg.mlp_ratio,
                 output_dim=embed_dim,
                 act_layer=act_layer,
+                prompt_tokens=prompt_tokens
             )
 
         self.transformer = Transformer(
@@ -633,7 +637,7 @@ def convert_weights_to_fp16(model: nn.Module):
     model.apply(_convert_weights_to_fp16)
 
 
-def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1):
+def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, prompt_tokens: int = 0):
     vit = "visual.proj" in state_dict
 
     if vit:
@@ -664,7 +668,7 @@ def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1):
         layers=vision_layers,
         width=vision_width,
         patch_size=vision_patch_size,
-        image_size=image_size,
+        image_size=image_size
     )
     text_cfg = CLIPTextCfg(
         context_length=context_length,
@@ -678,7 +682,8 @@ def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1):
         vision_cfg=vision_cfg,
         text_cfg=text_cfg,
         quick_gelu=True,  # OpenAI models were trained with QuickGELU
-        lora=lora
+        lora=lora,
+        prompt_tokens=prompt_tokens
     )
 
     for key in ["input_resolution", "context_length", "vocab_size"]:
