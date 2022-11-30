@@ -47,7 +47,7 @@ def unwrap_model(model):
         return model
 
 
-def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
+def train_one_epoch(model, midas, data, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
     device = torch.device(args.device)
     autocast = get_autocast(args.precision)
 
@@ -81,7 +81,8 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
         optimizer.zero_grad()
 
         with autocast():
-            image_features, text_features, logit_scale = model(images, texts)
+            depth = midas(images)
+            image_features, text_features, logit_scale = model(images, texts, depth.unsqueeze(1))
             total_loss = loss(image_features, text_features, logit_scale)
 
         if scaler is not None:

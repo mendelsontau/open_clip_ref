@@ -393,15 +393,21 @@ class VisualTransformer(nn.Module):
         self.patch_size = to_2tuple(patch_size)
         self.grid_size = (self.image_size[0] // self.patch_size[0], self.image_size[1] // self.patch_size[1])
         self.output_dim = output_dim
-        self.conv1 = nn.Conv2d(in_channels=3, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False)
+        if lora >= 0:
+            self.conv1 = lora_layers.Conv2d(in_channels=3, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False, r=lora)
+        else:
+            self.conv1 = nn.Conv2d(in_channels=3, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False)
         self.num_tokens = prompt_tokens
+
+        self.conv2 = nn.Conv2d(in_channels=1, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False)
+        
 
         scale = width ** -0.5
         self.class_embedding = nn.Parameter(scale * torch.randn(width))
         self.positional_embedding = nn.Parameter(scale * torch.randn(self.grid_size[0] * self.grid_size[1] + 1, width))
         self.ln_pre = LayerNorm(width)
 
-        self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=-1)
+        self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=lora)
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
@@ -421,7 +427,7 @@ class VisualTransformer(nn.Module):
     def set_grad_checkpointing(self, enable=True):
         self.transformer.grad_checkpointing = enable
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, d: torch.Tensor = None):
         x = self.conv1(x)  # shape = [*, width, grid, grid]
         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
@@ -429,6 +435,14 @@ class VisualTransformer(nn.Module):
             [self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device),
              x], dim=1)  # shape = [*, grid ** 2 + 1, width]
         x = x + self.positional_embedding.to(x.dtype)
+        if d != None:
+            d = self.conv2(d)
+            d = d.reshape(d.shape[0], d.shape[1], -1)  # shape = [*, width, grid ** 2]
+            d = d.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
+            d = d + self.positional_embedding.to(d.dtype)[1:,:]
+
+        x = torch.cat([x,d], dim=1)
+        
         x = self.ln_pre(x)
 
         if self.num_tokens > 0:
@@ -442,6 +456,7 @@ class VisualTransformer(nn.Module):
 
         if self.proj is not None:
             x = x @ self.proj
+
 
         return x
 
@@ -522,7 +537,8 @@ class CLIP(nn.Module):
                 mlp_ratio=vision_cfg.mlp_ratio,
                 output_dim=embed_dim,
                 act_layer=act_layer,
-                prompt_tokens=prompt_tokens
+                prompt_tokens=prompt_tokens,
+                lora=lora
             )
 
         self.transformer = Transformer(
@@ -581,8 +597,8 @@ class CLIP(nn.Module):
         self.visual.set_grad_checkpointing(enable)
         self.transformer.grad_checkpointing = enable
 
-    def encode_image(self, image):
-        return self.visual(image)
+    def encode_image(self, image, depth = None):
+        return self.visual(image, depth)
 
     def encode_text(self, text):
         x = self.token_embedding(text)  # [batch_size, n_ctx, d_model]
@@ -599,12 +615,12 @@ class CLIP(nn.Module):
 
         return x
 
-    def forward(self, image, text):
+    def forward(self, image, text, depth = None):
         if image is None:
             return self.encode_text(text)
         elif text is None:
-            return self.encode_image(image)
-        image_features = self.encode_image(image)
+            return self.encode_image(image, depth)
+        image_features = self.encode_image(image, depth)
         image_features = F.normalize(image_features, dim=-1)
 
         text_features = self.encode_text(text)

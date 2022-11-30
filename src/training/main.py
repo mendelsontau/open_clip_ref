@@ -27,7 +27,7 @@ except ImportError:
 sys.path.insert(0, "/home/gamir/DER-Roei/alon/open_clip_ref/src")
 
 
-from open_clip import create_model_and_transforms, trace_model, mark_only_lora_as_trainable 
+from open_clip import create_model_and_transforms, trace_model, mark_only_lora_as_trainable, linear_decoder
 from training.data import get_data
 from training.distributed import is_master, init_distributed_device, world_info_from_env
 from training.logger import setup_logging
@@ -160,6 +160,15 @@ def main():
         if args.prompt_tokens > 0:
             model.visual.prompts.requires_grad_()
 
+    model_type = "DPT_Large"
+    midas = torch.hub.load("intel-isl/MiDaS", model_type)
+    midas.to(args.device)
+    for param in midas.parameters():
+        param.requires_grad = False
+
+    midas.eval()
+
+
     for name, param in model.named_parameters():
         if param.requires_grad:
             print (name)
@@ -290,7 +299,7 @@ def main():
         if is_master(args):
             logging.info(f'Start epoch {epoch}')
 
-        train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, writer)
+        train_one_epoch(model, midas, data, epoch, optimizer, scaler, scheduler, args, writer)
         completed_epoch = epoch + 1
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):
