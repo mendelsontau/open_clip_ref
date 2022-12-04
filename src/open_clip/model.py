@@ -385,23 +385,29 @@ class VisualTransformer(nn.Module):
             mlp_ratio: float,
             output_dim: int,
             act_layer: Callable = nn.GELU,
+            lora: int = -1,
+            image_lora: bool = False,
             prompt_tokens: int = 0,
-            lora: int = -1
     ):
         super().__init__()
         self.image_size = to_2tuple(image_size)
         self.patch_size = to_2tuple(patch_size)
         self.grid_size = (self.image_size[0] // self.patch_size[0], self.image_size[1] // self.patch_size[1])
         self.output_dim = output_dim
-        self.conv1 = nn.Conv2d(in_channels=3, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False)
+        if image_lora:
+            self.conv1 = lora_layers.Conv2d(in_channels=3, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False, r=lora)
+        else:
+            self.conv1 = nn.Conv2d(in_channels=3, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False)
         self.num_tokens = prompt_tokens
 
         scale = width ** -0.5
         self.class_embedding = nn.Parameter(scale * torch.randn(width))
         self.positional_embedding = nn.Parameter(scale * torch.randn(self.grid_size[0] * self.grid_size[1] + 1, width))
         self.ln_pre = LayerNorm(width)
-
-        self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=-1)
+        if image_lora:
+            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=lora)
+        else:
+            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=-1)
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
@@ -477,6 +483,7 @@ class CLIP(nn.Module):
             text_cfg: CLIPTextCfg,
             quick_gelu: bool = False,
             lora: int = -1,
+            image_lora: bool = False,
             prompt_tokens: int = 0
     ):
         super().__init__()
@@ -522,6 +529,8 @@ class CLIP(nn.Module):
                 mlp_ratio=vision_cfg.mlp_ratio,
                 output_dim=embed_dim,
                 act_layer=act_layer,
+                lora=lora,
+                image_lora = image_lora,
                 prompt_tokens=prompt_tokens
             )
 
@@ -637,7 +646,7 @@ def convert_weights_to_fp16(model: nn.Module):
     model.apply(_convert_weights_to_fp16)
 
 
-def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, prompt_tokens: int = 0):
+def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_lora: bool = False, prompt_tokens: int = 0):
     vit = "visual.proj" in state_dict
 
     if vit:
@@ -683,6 +692,7 @@ def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, prompt_
         text_cfg=text_cfg,
         quick_gelu=True,  # OpenAI models were trained with QuickGELU
         lora=lora,
+        image_lora = image_lora,
         prompt_tokens=prompt_tokens
     )
 

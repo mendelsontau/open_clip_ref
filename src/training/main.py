@@ -130,6 +130,7 @@ def main():
         args.model,
         args.pretrained,
         args.lora,
+        args.image_lora,
         args.prompt_tokens,
         precision=args.precision,
         device=device,

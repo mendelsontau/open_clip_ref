@@ -37,6 +37,12 @@ def parse_args():
         help="lora rank",
     )
     parser.add_argument(
+        "--image-lora",
+        default=False,
+        action="store_true",
+        help="apply lora to image encoder"
+    )    
+    parser.add_argument(
         "--prompt-tokens",
         type=int,
         default=-0,
