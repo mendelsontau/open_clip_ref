@@ -441,7 +441,7 @@ class VisualTransformer(nn.Module):
             d = d.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
             d = d + self.positional_embedding.to(d.dtype)[1:,:]
 
-        x = torch.cat([x,d], dim=1)
+            x = torch.cat([x,d], dim=1)
         
         x = self.ln_pre(x)
 
