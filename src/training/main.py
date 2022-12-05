@@ -154,11 +154,10 @@ def main():
         mark_only_lora_as_trainable(model)
         if args.prompt_tokens > 0:
             model.visual.prompts.requires_grad_()
-    else:
-        for param in model.parameters():
-            param.requires_grad = False
-    
+    else:    
         if args.prompt_tokens > 0:
+            for param in model.parameters():
+                param.requires_grad = False
             model.visual.prompts.requires_grad_()
 
     for name, param in model.named_parameters():
@@ -281,7 +280,13 @@ def main():
         evaluate(model, data, start_epoch, args, writer)
         if args.vlchecklist_frequency > 0:
             vl_model = OPEN_CLIP(f'epoch {start_epoch}',model, preprocess_val)
-            vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
+            vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip1.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
+            vl_eval.start()
+            vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip2.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
+            vl_eval.start()
+            vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip3.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
+            vl_eval.start()
+            vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip4.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
             vl_eval.start()
         if args.winoground_frequency > 0:
             evaluate_winoground(model, preprocess_val, start_epoch, args, writer)
@@ -298,7 +303,13 @@ def main():
             evaluate(model, data, completed_epoch, args, writer)
             if args.vlchecklist_frequency > 0 and completed_epoch % args.vlchecklist_frequency == 0:
                 vl_model = OPEN_CLIP(f'epoch {start_epoch}',model, preprocess_val)
-                vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
+                vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip1.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
+                vl_eval.start()
+                vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip2.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
+                vl_eval.start()
+                vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip3.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
+                vl_eval.start()
+                vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip4.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
                 vl_eval.start()
             if args.winoground_frequency > 0 and completed_epoch % args.winoground_frequency == 0:
                 evaluate_winoground(model, preprocess_val, completed_epoch, args, writer)
