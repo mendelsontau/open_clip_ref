@@ -3,7 +3,7 @@ import os
 import random
 from datetime import datetime
 import sys
-
+import math
 import numpy as np
 import torch
 from torch import optim
@@ -27,13 +27,14 @@ except ImportError:
 sys.path.insert(0, "/home/gamir/DER-Roei/alon/open_clip_ref/src")
 
 
-from open_clip import create_model_and_transforms, trace_model, mark_only_lora_as_trainable 
+from open_clip import create_model_and_transforms, trace_model, mark_only_lora_as_trainable, image_transform_vg
 from training.data import get_data
 from training.distributed import is_master, init_distributed_device, world_info_from_env
 from training.logger import setup_logging
 from training.params import parse_args
 from training.scheduler import cosine_lr
 from training.train import train_one_epoch, evaluate, evaluate_winoground
+from training.vg_dataset import VgDataset, get_vg_loader
 
 from VL_CheckList.example_models.open_clip.engine import OPEN_CLIP
 from VL_CheckList.vl_checklist.evaluate import Evaluate
@@ -243,6 +244,14 @@ def main():
     # initialize datasets
     data = get_data(args, (preprocess_train, preprocess_val), epoch=start_epoch)
     assert len(data), 'At least one train or eval dataset must be specified.'
+
+    #vg data
+    if args.train_data:
+        vg_dataset = VgDataset(args.vg_data, image_transform_vg(model.visual.image_size), args.prompt_tokens)
+        num = len(vg_dataset)*args.batch_size/data["train"].dataloader.num_samples
+        vg_batch_size = math.floor(num / 2) * 2
+        vg_dataloader = get_vg_loader(vg_dataset, args, vg_batch_size)
+    
 
     # create scheduler if train
     scheduler = None

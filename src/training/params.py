@@ -19,6 +19,12 @@ def parse_args():
         help="Path to csv filewith training data",
     )
     parser.add_argument(
+        "--vg-data",
+        type=str,
+        default=None,
+        help="Path to vg folder",
+    )
+    parser.add_argument(
         "--val-data",
         type=str,
         default=None,

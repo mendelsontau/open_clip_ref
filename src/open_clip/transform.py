@@ -84,3 +84,36 @@ def image_transform(
             normalize,
         ])
         return Compose(transforms)
+
+
+
+def image_transform_vg(
+        image_size: int,
+        mean: Optional[Tuple[float, ...]] = None,
+        std: Optional[Tuple[float, ...]] = None,
+        resize_longest_max: bool = False,
+        fill_color: int = 0,
+):
+    mean = mean or OPENAI_DATASET_MEAN
+    if not isinstance(mean, (list, tuple)):
+        mean = (mean,) * 3
+
+    std = std or OPENAI_DATASET_STD
+    if not isinstance(std, (list, tuple)):
+        std = (std,) * 3
+
+    normalize = Normalize(mean=mean, std=std)
+    if resize_longest_max:
+        transforms = [
+            ResizeMaxSize(image_size, fill=fill_color)
+        ]
+    else:
+        transforms = [
+            Resize(image_size, interpolation=InterpolationMode.BICUBIC)
+        ]
+        transforms.extend([
+            _convert_to_rgb,
+            ToTensor(),
+            normalize,
+        ])
+    return Compose(transforms)
