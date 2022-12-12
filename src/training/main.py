@@ -27,6 +27,7 @@ except ImportError:
 sys.path.insert(0, "/home/gamir/DER-Roei/alon/open_clip_ref/src")
 
 
+
 from open_clip import create_model_and_transforms, trace_model, mark_only_lora_as_trainable, image_transform_vg
 from training.data import get_data
 from training.distributed import is_master, init_distributed_device, world_info_from_env
@@ -34,7 +35,10 @@ from training.logger import setup_logging
 from training.params import parse_args
 from training.scheduler import cosine_lr
 from training.train import train_one_epoch, evaluate, evaluate_winoground
-from training.vg_dataset import VgDataset, get_vg_loader
+from training.vg_dataset import VgDataset, VgDatasetIterable, get_vg_loader, get_vg_loader_it
+from training.vg_model import PredictionHead
+from detr.models.matcher import HungarianMatcher
+from detr.models.detr import SetCriterion
 
 from VL_CheckList.example_models.open_clip.engine import OPEN_CLIP
 from VL_CheckList.vl_checklist.evaluate import Evaluate
@@ -143,6 +147,13 @@ def main():
     )
     random_seed(args.seed, args.rank)
 
+    model_visual_size = model.visual.image_size
+
+    #vg prediction heads
+    object_head = PredictionHead(768,512).to(args.device)
+    bb_head = PredictionHead(768,4).to(args.device)
+
+
     if args.trace:
         model = trace_model(model, batch_size=args.batch_size, device=device)
 
@@ -186,7 +197,10 @@ def main():
         if args.ddp_static_graph:
             # this doesn't exist in older PyTorch, arg only added if enabled
             ddp_args['static_graph'] = True
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], **ddp_args)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], **ddp_args, find_unused_parameters=True)
+        object_head = torch.nn.parallel.DistributedDataParallel(object_head, device_ids=[device], **ddp_args, find_unused_parameters=True)
+        bb_head = torch.nn.parallel.DistributedDataParallel(bb_head, device_ids=[device], **ddp_args, find_unused_parameters=True)
+
 
     # create optimizer and scaler
     optimizer = None
@@ -247,11 +261,18 @@ def main():
 
     #vg data
     if args.train_data:
-        vg_dataset = VgDataset(args.vg_data, image_transform_vg(model.visual.image_size), args.prompt_tokens)
-        num = len(vg_dataset)*args.batch_size/data["train"].dataloader.num_samples
-        vg_batch_size = math.floor(num / 2) * 2
+        vg_dataset = VgDataset(args.vg_data, image_transform_vg(model_visual_size), args.prompt_tokens)
+        vg_batch_size = args.vg_batch_size
         vg_dataloader = get_vg_loader(vg_dataset, args, vg_batch_size)
-    
+        matcher = HungarianMatcher() 
+        weight_dict = {'loss_ce': 1, 'loss_bbox': 5}
+        weight_dict['loss_giou'] = 2
+        losses = ['labels', 'boxes', 'cardinality']
+
+        vgcriterion = SetCriterion(vg_batch_size*args.prompt_tokens, matcher=matcher, weight_dict=weight_dict,
+                             eos_coef=0.1, losses=losses)
+        vgcriterion.to(args.device)
+
 
     # create scheduler if train
     scheduler = None
@@ -305,7 +326,7 @@ def main():
         if is_master(args):
             logging.info(f'Start epoch {epoch}')
 
-        train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, writer)
+        train_one_epoch(model, object_head, bb_head, vgcriterion, data, vg_dataloader, epoch, optimizer, scaler, scheduler, args, writer)
         completed_epoch = epoch + 1
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):

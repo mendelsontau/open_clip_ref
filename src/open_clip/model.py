@@ -444,12 +444,15 @@ class VisualTransformer(nn.Module):
         x = self.transformer(x)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
-        x = self.ln_post(x[:, 0, :])
+        x1 = self.ln_post(x[:, 0, :])
 
         if self.proj is not None:
-            x = x @ self.proj
+            x1 = x1 @ self.proj
+        
+        if self.num_tokens > 0:
+            x2 = x[:,1:1 + self.num_tokens,:]
 
-        return x
+        return x1, x2
 
 
 @dataclass
@@ -613,13 +616,13 @@ class CLIP(nn.Module):
             return self.encode_text(text)
         elif text is None:
             return self.encode_image(image)
-        image_features = self.encode_image(image)
+        image_features, object_tokens = self.encode_image(image)
         image_features = F.normalize(image_features, dim=-1)
 
         text_features = self.encode_text(text)
         text_features = F.normalize(text_features, dim=-1)
 
-        return image_features, text_features, self.logit_scale.exp()
+        return image_features, object_tokens, text_features, self.logit_scale.exp()
 
 
 def convert_weights_to_fp16(model: nn.Module):

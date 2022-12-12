@@ -46,12 +46,55 @@ def unwrap_model(model):
     else:
         return model
 
+def organize_batch_classes(object_descriptions, valid_objects, vg_bbs, args, device):
+    class_tokens = []
+    object_samples = []
+    tgt_boxes = []
+    for i in range (valid_objects.shape[0]):
+        valid_samples = valid_objects[i].item()
+        invalid_samples = args.prompt_tokens - valid_samples
+        valid_for_sample = valid_samples * [True] + invalid_samples*[False]
+        object_samples.append(valid_for_sample)
 
-def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
+        if valid_samples == 0:
+            tgt_boxes.append(torch.tensor([]).to(device=device, non_blocking=True))
+        else:
+            mask = torch.tensor(valid_for_sample).unsqueeze(1).expand(-1,4)
+            boxes_for_sample = torch.masked_select(vg_bbs[i],mask).view(-1,4).to(device=device, non_blocking=True)
+            tgt_boxes.append(boxes_for_sample)
+    
+    
+    tgt_labels = []
+    for i in range(object_descriptions.shape[0]):
+        labels_for_sample = []
+        for j in range(object_descriptions.shape[1]):
+            if object_samples[i][j] == False:
+                continue
+            desc = object_descriptions[i][j]
+            exists = False
+            for k in range (len(class_tokens)):
+                if torch.equal(desc,class_tokens[k]):
+                    exists = True
+                    labels_for_sample.append(k)
+                    break
+            if not exists:
+                labels_for_sample.append(len(class_tokens))
+                class_tokens.append(desc)
+        tgt_labels.append(torch.tensor(labels_for_sample).type(torch.int64).to(device=device, non_blocking=True))
+    class_tokens = torch.stack(class_tokens)
+    targets = [{"labels": l, "boxes": b} for l,b in zip(tgt_labels,tgt_boxes)]
+    return class_tokens, targets
+
+
+
+
+def train_one_epoch(model, object_head, bb_head, vgcriterion, data, vg_dataloader, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
     device = torch.device(args.device)
     autocast = get_autocast(args.precision)
 
     model.train()
+    object_head.train()
+    bb_head.train()
     loss = ClipLoss(
         local_loss=args.local_loss,
         gather_with_grad=args.gather_with_grad,
@@ -69,20 +112,44 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
     end = time.time()
+
+    vg_iter = iter(vg_dataloader)
     for i, batch in enumerate(dataloader):
         step = num_batches_per_epoch * epoch + i
         scheduler(step)
-
         images, texts = batch
+        vg_batch = next(vg_iter)
+        vg_images, valid_objects, vg_bbs, vg_object_descriptions = vg_batch 
+        images = torch.cat([images,vg_images])
         images = images.to(device=device, non_blocking=True)
         texts = texts.to(device=device, non_blocking=True)
+
+        class_tokens, targets = organize_batch_classes(vg_object_descriptions, valid_objects, vg_bbs, args, device)
+        class_tokens = class_tokens.to(device=device, non_blocking=True)
+
+
 
         data_time_m.update(time.time() - end)
         optimizer.zero_grad()
 
         with autocast():
-            image_features, text_features, logit_scale = model(images, texts)
-            total_loss = loss(image_features, text_features, logit_scale)
+            with torch.no_grad():
+                description_embeddings = model(None, class_tokens)
+                num_random_rows = args.vg_batch_size*args.prompt_tokens + 1 - description_embeddings.shape[0]
+                random_rows = torch.rand(num_random_rows, description_embeddings.shape[1]).to(device=device, non_blocking=True)
+                description_embeddings = torch.cat([description_embeddings,random_rows])
+
+                
+            image_features, object_tokens, text_features, logit_scale = model(images, texts)
+            object_tokens = object_tokens[-vg_images.shape[0]:,:,:]
+            label_embeddings = object_head(object_tokens)
+            label_predictions = logit_scale * label_embeddings @ description_embeddings.t()
+            bb_predictions = bb_head(object_tokens).sigmoid()
+            predictions_dict = {"pred_logits" : label_predictions, "pred_boxes": bb_predictions}
+            loss_dict = vgcriterion(predictions_dict, targets)
+            weight_dict = vgcriterion.weight_dict
+            vg_losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+            total_loss = loss(image_features[:args.batch_size,:], text_features, logit_scale) + vg_losses * args.vg_loss_lambda
 
         if scaler is not None:
             scaler.scale(total_loss).backward()

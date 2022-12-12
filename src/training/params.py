@@ -127,6 +127,9 @@ def parse_args():
         "--batch-size", type=int, default=64, help="Batch size per GPU."
     )
     parser.add_argument(
+        "--vg-batch-size", type=int, default=4, help="Batch size auxiliary per GPU."
+    )
+    parser.add_argument(
         "--epochs", type=int, default=32, help="Number of epochs to train for."
     )
     parser.add_argument("--lr", type=float, default=None, help="Learning rate.")
@@ -137,6 +140,8 @@ def parse_args():
     parser.add_argument(
         "--warmup", type=int, default=10000, help="Number of steps to warmup for."
     )
+    parser.add_argument("--vg-loss-lambda", type=float, default=0.001, help="Weight of vg loss.")
+
     parser.add_argument(
         "--use-bn-sync",
         default=False,
