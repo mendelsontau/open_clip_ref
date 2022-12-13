@@ -147,6 +147,7 @@ def main():
     )
     random_seed(args.seed, args.rank)
 
+    #length of patch tokens
     model_visual_size = model.visual.image_size
 
     #vg prediction heads
@@ -198,8 +199,8 @@ def main():
             # this doesn't exist in older PyTorch, arg only added if enabled
             ddp_args['static_graph'] = True
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], **ddp_args, find_unused_parameters=True)
-        object_head = torch.nn.parallel.DistributedDataParallel(object_head, device_ids=[device], **ddp_args, find_unused_parameters=True)
-        bb_head = torch.nn.parallel.DistributedDataParallel(bb_head, device_ids=[device], **ddp_args, find_unused_parameters=True)
+        object_head = torch.nn.parallel.DistributedDataParallel(object_head, device_ids=[device], **ddp_args)
+        bb_head = torch.nn.parallel.DistributedDataParallel(bb_head, device_ids=[device], **ddp_args)
 
 
     # create optimizer and scaler
@@ -243,6 +244,14 @@ def main():
                 if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
                     sd = {k[len('module.'):]: v for k, v in sd.items()}
                 model.load_state_dict(sd)
+                sd = checkpoint["object_state_dict"]
+                if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                    sd = {k[len('module.'):]: v for k, v in sd.items()}
+                object_head.load_state_dict(sd)
+                sd = checkpoint["bb_state_dict"]
+                if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                    sd = {k[len('module.'):]: v for k, v in sd.items()}
+                bb_head.load_state_dict(sd)
                 if optimizer is not None:
                     optimizer.load_state_dict(checkpoint["optimizer"])
                 if scaler is not None and 'scaler' in checkpoint:
@@ -260,7 +269,7 @@ def main():
     assert len(data), 'At least one train or eval dataset must be specified.'
 
     #vg data
-    if args.train_data:
+    if args.train_data and args.vg_data:
         vg_dataset = VgDataset(args.vg_data, image_transform_vg(model_visual_size), args.prompt_tokens)
         vg_batch_size = args.vg_batch_size
         vg_dataloader = get_vg_loader(vg_dataset, args, vg_batch_size)
@@ -350,6 +359,8 @@ def main():
                 "epoch": completed_epoch,
                 "name": args.name,
                 "state_dict": model.state_dict(),
+                "object_state_dict": object_head.state_dict(),
+                "bb_state_dict": bb_head.state_dict(),
                 "optimizer": optimizer.state_dict(),
             }
             if scaler is not None:
