@@ -325,7 +325,7 @@ def evaluate_winoground(model, clip_processor, epoch, args, tb_writer=None):
         captions = torch.cat([caption0,caption1],dim=0)
         images = images.to(args.device, non_blocking=True)
         captions = captions.to(args.device, non_blocking=True)
-        image_features, text_features, logit_scale = model(images, captions)
+        image_features, _, text_features, logit_scale = model(images, captions)
         logit_scale = logit_scale.mean()
         logits_per_image = logit_scale * image_features @ text_features.t()
         logits_per_image = logits_per_image.detach().cpu()

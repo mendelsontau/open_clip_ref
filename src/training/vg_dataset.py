@@ -49,7 +49,7 @@ class VgDataset(Dataset):
         #load objects and choose randomly
         attributes = self.object_attributes[idx]["attributes"]
         objects = self.object[idx]["objects"]
-        #objects = [obj for obj in objects if obj["x"] + obj["w"] >= obj["x"] and obj["y"] + obj["h"] >= obj["y"]]
+        objects = [obj for obj in objects if obj["x"] + obj["w"] > obj["x"] and obj["y"] + obj["h"] > obj["y"]]
         if len(objects) > self.num_objects:
             objects = random.sample(objects,self.num_objects)
         missing_objects = self.num_objects - len(objects)
@@ -133,7 +133,7 @@ class VgDatasetIterable(IterableDataset):
         #load objects and choose randomly
         attributes = self.object_attributes[idx]["attributes"]
         objects = self.object[idx]["objects"]
-        #objects = [obj for obj in objects if obj["x"] + obj["w"] >= obj["x"] and obj["y"] + obj["h"] >= obj["y"]]
+        objects = [obj for obj in objects if obj["x"] + obj["w"] > obj["x"] and obj["y"] + obj["h"] > obj["y"]]
         if len(objects) > self.num_objects:
             objects = random.sample(objects,self.num_objects)
         missing_objects = self.num_objects - len(objects)
