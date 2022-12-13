@@ -386,6 +386,18 @@ def evaluate_winoground(model, clip_processor, epoch, args, tb_writer=None):
 
     return metrics
 
+def evaluate_auxiliary(model,object_head,bb_head,batch,args):
+    model.eval()
+    object_head.eval()
+    bb_head.eval()
+    vg_images, valid_objects, vg_bbs, vg_object_descriptions = batch
+    _, object_tokens, _, _ = model(vg_images, None)
+    bb_predictions = bb_head(object_tokens).sigmoid()
+    return
+
+     
+
+
 def get_metrics(image_features, text_features, logit_scale):
     metrics = {}
     logits_per_image = (logit_scale * image_features @ text_features.t()).detach().cpu()

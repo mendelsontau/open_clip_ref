@@ -269,18 +269,24 @@ def main():
     assert len(data), 'At least one train or eval dataset must be specified.'
 
     #vg data
-    if args.train_data and args.vg_data:
+    if args.vg_data:
         vg_dataset = VgDataset(args.vg_data, image_transform_vg(model_visual_size), args.prompt_tokens)
         vg_batch_size = args.vg_batch_size
-        vg_dataloader = get_vg_loader(vg_dataset, args, vg_batch_size)
-        matcher = HungarianMatcher() 
-        weight_dict = {'loss_ce': 1, 'loss_bbox': 5}
-        weight_dict['loss_giou'] = 2
-        losses = ['labels', 'boxes', 'cardinality']
+        #vg_vis_dataloader = get_vg_loader(vg_dataset, args, vg_batch_size)
+        #vg_vis_iterator = iter(vg_vis_dataloader)
+        #vg_vis_batch = next(vg_vis_iterator)
+        if args.train_data:
+            vg_dataloader = get_vg_loader(vg_dataset, args, vg_batch_size)
+            matcher = HungarianMatcher() 
+            weight_dict = {'loss_ce': 1, 'loss_bbox': 5}
+            weight_dict['loss_giou'] = 2
+            losses = ['labels', 'boxes', 'cardinality']
 
-        vgcriterion = SetCriterion(vg_batch_size*args.prompt_tokens, matcher=matcher, weight_dict=weight_dict,
+            vgcriterion = SetCriterion(vg_batch_size*args.prompt_tokens, matcher=matcher, weight_dict=weight_dict,
                              eos_coef=0.1, losses=losses)
-        vgcriterion.to(args.device)
+            vgcriterion.to(args.device)
+
+    
 
 
     # create scheduler if train
