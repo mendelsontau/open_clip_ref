@@ -56,7 +56,9 @@ class VgDataset(Dataset):
         valid_objects = torch.tensor(self.num_objects - missing_objects, dtype=torch.long)
         
         #prepare bounding boxes
-        bounding_boxes = [[(ob["x"] + 0.5*ob["w"])/image_w,(ob["y"] + 0.5*ob["h"])/image_h,min((ob["w"])/image_w,1.0),min((ob["h"])/image_h,1.0)] for ob in objects] + [[0,0,0,0] for i in range(missing_objects)]
+        bounding_boxes = [[(ob["x"] + 0.5*ob["w"])/image_w,(ob["y"] + 0.5*ob["h"])/image_h,min((ob["w"])/image_w,1.0),min((ob["h"])/image_h,1.0)] for ob in objects]
+        if missing_objects > 0:
+            bounding_boxes += [[0.0,0.0,0.0,0.0] for i in range(missing_objects)]
         bounding_boxes = torch.tensor(bounding_boxes)
         attr = []
         found = False
@@ -73,7 +75,9 @@ class VgDataset(Dataset):
         #prepare object descriptions
         object_names = [a["names"] for a in attr]
         object_attributes = [" ".join(a["attributes"]) if "attributes" in a else "" for a in attr]
-        object_descriptions = [text1 + " " +  " ".join(text2) for text1, text2 in zip(object_attributes,object_names)] + ["" for i in range(missing_objects)]
+        object_descriptions = [text1 + " " +  " ".join(text2) for text1, text2 in zip(object_attributes,object_names)]
+        if missing_objects > 0:
+            object_descriptions += ["" for i in range(missing_objects)]
         object_descriptions = tokenize(object_descriptions)
 
 
@@ -169,10 +173,9 @@ def get_vg_loader(dataset, args, vg_batch_size):
         dataset,
         batch_size=vg_batch_size,
         shuffle=shuffle,
-        num_workers=0,
+        num_workers=args.num_workers,
         pin_memory=True,
-        sampler=sampler,
-        drop_last=True,
+        sampler=sampler
     )
     return dataloader
 
