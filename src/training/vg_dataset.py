@@ -173,7 +173,7 @@ def get_vg_loader(dataset, args, vg_batch_size):
         dataset,
         batch_size=vg_batch_size,
         shuffle=shuffle,
-        num_workers=args.num_workers,
+        num_workers=args.workers,
         pin_memory=True,
         sampler=sampler
     )
