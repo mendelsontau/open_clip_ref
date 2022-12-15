@@ -136,6 +136,7 @@ def main():
         args.pretrained,
         args.lora,
         args.image_lora,
+        args.text_lora,
         args.prompt_tokens,
         precision=args.precision,
         device=device,
@@ -335,7 +336,8 @@ def main():
             vl_eval.start()
         if args.winoground_frequency > 0:
             evaluate_winoground(model, preprocess_val, start_epoch, args, writer)
-            evaluate_auxiliary(model, object_head, bb_head, vg_vis_batch,args,start_epoch)
+            if args.vg_data:
+                evaluate_auxiliary(model, object_head, bb_head, vg_vis_batch,args,start_epoch)
         return
 
     for epoch in range(start_epoch, args.epochs):
@@ -359,7 +361,8 @@ def main():
                 vl_eval.start()
             if args.winoground_frequency > 0 and completed_epoch % args.winoground_frequency == 0:
                 evaluate_winoground(model, preprocess_val, completed_epoch, args, writer)
-                evaluate_auxiliary(model, object_head, bb_head, vg_vis_batch,args,completed_epoch)
+                if args.vg_data:
+                    evaluate_auxiliary(model, object_head, bb_head, vg_vis_batch, args, completed_epoch)
 
         # Saving checkpoints.
         if args.save_logs:

@@ -448,9 +448,8 @@ class VisualTransformer(nn.Module):
 
         if self.proj is not None:
             x1 = x1 @ self.proj
-        
-        if self.num_tokens > 0:
-            x2 = x[:,1:1 + self.num_tokens,:]
+
+        x2 = x[:,1:1 + self.num_tokens,:]
 
         return x1, x2
 
@@ -487,6 +486,7 @@ class CLIP(nn.Module):
             quick_gelu: bool = False,
             lora: int = -1,
             image_lora: bool = False,
+            text_lora: bool = False,
             prompt_tokens: int = 0
     ):
         super().__init__()
@@ -542,7 +542,7 @@ class CLIP(nn.Module):
             layers=text_cfg.layers,
             heads=text_cfg.heads,
             act_layer=act_layer,
-            lora=lora
+            lora=lora if text_lora else -1
         )
 
         self.vocab_size = text_cfg.vocab_size
@@ -649,7 +649,7 @@ def convert_weights_to_fp16(model: nn.Module):
     model.apply(_convert_weights_to_fp16)
 
 
-def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_lora: bool = False, prompt_tokens: int = 0):
+def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_lora: bool = False, text_lora: bool = False, prompt_tokens: int = 0):
     vit = "visual.proj" in state_dict
 
     if vit:
@@ -696,6 +696,8 @@ def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_l
         quick_gelu=True,  # OpenAI models were trained with QuickGELU
         lora=lora,
         image_lora = image_lora,
+        text_lora = text_lora,
+
         prompt_tokens=prompt_tokens
     )
 

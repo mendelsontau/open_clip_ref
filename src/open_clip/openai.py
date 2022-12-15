@@ -24,6 +24,7 @@ def load_openai_model(
         name: str,
         lora: int = -1,
         image_lora: bool = False,
+        text_lora: bool = False,
         prompt_tokens: int = 0,
         device: Union[str, torch.device] = "cuda" if torch.cuda.is_available() else "cpu",
         jit=True,
@@ -69,7 +70,7 @@ def load_openai_model(
 
     if not jit:
         try:
-            model = build_model_from_openai_state_dict(state_dict or model.state_dict(), lora=lora, image_lora=image_lora, prompt_tokens=prompt_tokens).to(device)
+            model = build_model_from_openai_state_dict(state_dict or model.state_dict(), lora=lora, image_lora=image_lora, text_lora=text_lora, prompt_tokens=prompt_tokens).to(device)
         except KeyError:
             sd = {k[7:]: v for k, v in state_dict["state_dict"].items()}
             model = build_model_from_openai_state_dict(sd).to(device)

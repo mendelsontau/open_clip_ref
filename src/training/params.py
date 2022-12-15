@@ -47,7 +47,13 @@ def parse_args():
         default=False,
         action="store_true",
         help="apply lora to image encoder"
-    )    
+    )
+    parser.add_argument(
+        "--text-lora",
+        default=False,
+        action="store_true",
+        help="apply lora to text encoder"
+    )      
     parser.add_argument(
         "--prompt-tokens",
         type=int,

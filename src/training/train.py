@@ -418,7 +418,8 @@ def evaluate_auxiliary(model,object_head,bb_head,batch,args,epoch):
     bb_predictions = bb_predictions.detach().cpu()
     vg_images = vg_images.cpu()
     imgs_folder_path = os.path.join(args.checkpoint_path,f'bb_vis-{epoch}')
-    os.mkdir(imgs_folder_path)
+    if not os.path.exists(imgs_folder_path):
+        os.mkdir(imgs_folder_path)
     for i in range(vg_images.shape[0]):
         full_image_path = os.path.join(imgs_folder_path, "img_bb_" + str(i) +  ".jpg")
         img = vg_images[i]
