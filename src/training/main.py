@@ -275,7 +275,6 @@ def main():
         vg_vis_dataloader = get_vg_loader(vg_dataset, args, vg_batch_size)
         vg_vis_iterator = iter(vg_vis_dataloader)
         vg_vis_batch = next(vg_vis_iterator)
-        evaluate_auxiliary(model, object_head, bb_head, vg_vis_batch,args,0)
         if args.train_data:
             vg_dataloader = get_vg_loader(vg_dataset, args, vg_batch_size)
             matcher = HungarianMatcher() 
@@ -336,6 +335,7 @@ def main():
             vl_eval.start()
         if args.winoground_frequency > 0:
             evaluate_winoground(model, preprocess_val, start_epoch, args, writer)
+            evaluate_auxiliary(model, object_head, bb_head, vg_vis_batch,args,start_epoch)
         return
 
     for epoch in range(start_epoch, args.epochs):
@@ -359,6 +359,7 @@ def main():
                 vl_eval.start()
             if args.winoground_frequency > 0 and completed_epoch % args.winoground_frequency == 0:
                 evaluate_winoground(model, preprocess_val, completed_epoch, args, writer)
+                evaluate_auxiliary(model, object_head, bb_head, vg_vis_batch,args,completed_epoch)
 
         # Saving checkpoints.
         if args.save_logs:
