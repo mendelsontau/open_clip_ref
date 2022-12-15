@@ -20,6 +20,10 @@ from .precision import get_autocast
 
 from datasets import load_dataset
 from tqdm import tqdm
+from torchvision import transforms as transforms
+from torchvision.transforms.functional import convert_image_dtype
+from detr.util.box_ops import box_cxcywh_to_xyxy
+from torchvision.utils import draw_bounding_boxes
 
 
 class AverageMeter(object):
@@ -307,6 +311,7 @@ def evaluate(model, data, epoch, args, tb_writer=None):
     return metrics
 
 def evaluate_winoground(model, clip_processor, epoch, args, tb_writer=None):
+    autocast = get_autocast(args.precision)
     model.eval()
     metrics = {}
     #if not is_master(args):
@@ -325,9 +330,11 @@ def evaluate_winoground(model, clip_processor, epoch, args, tb_writer=None):
         captions = torch.cat([caption0,caption1],dim=0)
         images = images.to(args.device, non_blocking=True)
         captions = captions.to(args.device, non_blocking=True)
-        image_features, _, text_features, logit_scale = model(images, captions)
-        logit_scale = logit_scale.mean()
-        logits_per_image = logit_scale * image_features @ text_features.t()
+        with torch.no_grad():
+            with autocast():
+                image_features, _, text_features, logit_scale = model(images, captions)
+                logit_scale = logit_scale.mean()
+                logits_per_image = logit_scale * image_features @ text_features.t()
         logits_per_image = logits_per_image.detach().cpu()
         clip_score_c0_i0 = logits_per_image[0,0].item()
         clip_score_c1_i0 = logits_per_image[0,1].item()
@@ -386,13 +393,42 @@ def evaluate_winoground(model, clip_processor, epoch, args, tb_writer=None):
 
     return metrics
 
-def evaluate_auxiliary(model,object_head,bb_head,batch,args):
+def evaluate_auxiliary(model,object_head,bb_head,batch,args,epoch):
+    autocast = get_autocast(args.precision)
+    inv_trans = transforms.Compose([ transforms.Normalize(mean = [ 0., 0., 0. ],
+                                                     std = [ 1/0.26862954, 1/0.26130258, 1/0.27577711 ]),
+                                transforms.Normalize(mean = [ -0.48145466, -0.4578275, -0.40821073 ],
+                                                     std = [ 1., 1., 1. ]),
+                               ])
+    device = torch.device(args.device)
     model.eval()
     object_head.eval()
     bb_head.eval()
     vg_images, valid_objects, vg_bbs, vg_object_descriptions = batch
-    _, object_tokens, _, _ = model(vg_images, None)
-    bb_predictions = bb_head(object_tokens).sigmoid()
+    vg_images = vg_images.to(device=device, non_blocking=True)
+    vg_bbs = vg_bbs.to(device=device, non_blocking=True)
+    vg_object_descriptions = vg_object_descriptions.to(device=device, non_blocking=True)
+    with torch.no_grad():
+        with autocast():
+            _, object_tokens, description_embeddings, logit_scale = model(vg_images, vg_object_descriptions.flatten(0,1))
+            bb_predictions = bb_head(object_tokens).sigmoid()
+            label_embeddings = object_head(object_tokens)
+            label_predictions = logit_scale.mean() * label_embeddings @ description_embeddings.t()
+            bb_predictions = box_cxcywh_to_xyxy(bb_predictions) * 224
+    bb_predictions = bb_predictions.detach().cpu()
+    vg_images = vg_images.cpu()
+    imgs_folder_path = os.path.join(args.checkpoint_path,f'bb_vis-{epoch}')
+    os.mkdir(imgs_folder_path)
+    for i in range(vg_images.shape[0]):
+        full_image_path = os.path.join(imgs_folder_path, "img_bb_" + str(i) +  ".jpg")
+        img = vg_images[i]
+        img = inv_trans(img)
+        img = torch.clamp(img,min=0.0,max=1.0)
+        img = convert_image_dtype(img,torch.uint8)
+        bb = bb_predictions[i,:5,:]
+        bb_img = draw_bounding_boxes(img,bb)
+        new_image = transforms.ToPILImage()(bb_img)
+        new_image.save(full_image_path)
     return
 
      

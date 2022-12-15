@@ -34,7 +34,7 @@ from training.distributed import is_master, init_distributed_device, world_info_
 from training.logger import setup_logging
 from training.params import parse_args
 from training.scheduler import cosine_lr
-from training.train import train_one_epoch, evaluate, evaluate_winoground
+from training.train import train_one_epoch, evaluate, evaluate_winoground, evaluate_auxiliary
 from training.vg_dataset import VgDataset, VgDatasetIterable, get_vg_loader, get_vg_loader_it
 from training.vg_model import PredictionHead
 from detr.models.matcher import HungarianMatcher
@@ -272,9 +272,10 @@ def main():
     if args.vg_data:
         vg_dataset = VgDataset(args.vg_data, image_transform_vg(model_visual_size), args.prompt_tokens)
         vg_batch_size = args.vg_batch_size
-        #vg_vis_dataloader = get_vg_loader(vg_dataset, args, vg_batch_size)
-        #vg_vis_iterator = iter(vg_vis_dataloader)
-        #vg_vis_batch = next(vg_vis_iterator)
+        vg_vis_dataloader = get_vg_loader(vg_dataset, args, vg_batch_size)
+        vg_vis_iterator = iter(vg_vis_dataloader)
+        vg_vis_batch = next(vg_vis_iterator)
+        evaluate_auxiliary(model, object_head, bb_head, vg_vis_batch,args,0)
         if args.train_data:
             vg_dataloader = get_vg_loader(vg_dataset, args, vg_batch_size)
             matcher = HungarianMatcher() 
