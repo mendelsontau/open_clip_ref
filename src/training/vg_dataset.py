@@ -12,24 +12,28 @@ import math
 
 
 class VgDataset(Dataset):
-    def __init__(self, vg_path, transforms, num_objects):
+    def __init__(self, vg_path, split, transforms, num_objects, num_samples):
         logging.debug(f'Loading data from visual genome.')
-        f = open(os.path.join(vg_path,"image_data.json"))
+        f = open(os.path.join(vg_path,"image_data_" + split +  ".json"))
         self.image_data = json.load(f)
-        f = open(os.path.join(vg_path,"attributes.json"))
+        f = open(os.path.join(vg_path,"attributes_" + split +  ".json"))
         self.object_attributes = json.load(f)
-        f = open(os.path.join(vg_path,"objects.json"))
+        f = open(os.path.join(vg_path,"objects_" + split +  ".json"))
         self.object = json.load(f)
-        f = open(os.path.join(vg_path,"relationships.json"))
+        f = open(os.path.join(vg_path,"relationships_" + split +  ".json"))
         self.relationships = json.load(f)
         self.num_objects = num_objects
         self.vg_path = vg_path
         self.clip_image_size = 224
         self.transforms = transforms
+        self.num_samples = num_samples
         logging.debug('Done loading data.')
 
     def __len__(self):
-        return len(self.object_attributes)
+        if self.num_samples is None:
+            return len(self.object_attributes)
+        else:
+            return self.num_samples
 
     def __getitem__(self, idx):
         #load image

@@ -24,6 +24,7 @@ def parse_args():
         default=None,
         help="Path to vg folder",
     )
+
     parser.add_argument(
         "--val-data",
         type=str,
@@ -35,6 +36,12 @@ def parse_args():
         type=int,
         default=None,
         help="Number of samples in dataset. Required for webdataset if not available in info file.",
+    )
+    parser.add_argument(
+        "--vg-samples",
+        type=int,
+        default=None,
+        help="Number of vg samples to train on.",
     )
     parser.add_argument(
         "--lora",
@@ -216,6 +223,12 @@ def parse_args():
         action='store_true',
         help="Lock full image tower by disabling gradients.",
     )
+    parser.add_argument(
+        "--lock-text",
+        default=False,
+        action='store_true',
+        help="Lock full text tower by disabling gradients.",
+    )  
     parser.add_argument(
         "--lock-image-unlocked-groups",
         type=int,

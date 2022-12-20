@@ -168,11 +168,17 @@ def main():
         mark_only_lora_as_trainable(model)
         if args.prompt_tokens > 0:
             model.visual.prompts.requires_grad_()
-    else:    
-        if args.prompt_tokens > 0:
+    else:
+        if args.lock_text:
             for param in model.parameters():
                 param.requires_grad = False
+        if not args.lock_image:
+            for param in model.visual.parameters():
+                param.requires_grad_()
+        if args.prompt_tokens > 0:
             model.visual.prompts.requires_grad_()
+    
+
 
     for name, param in model.named_parameters():
         if param.requires_grad:
@@ -271,17 +277,18 @@ def main():
 
     #vg data
     if args.vg_data:
-        vg_dataset = VgDataset(args.vg_data, image_transform_vg(model_visual_size), args.prompt_tokens)
+        vg_val_dataset = VgDataset(args.vg_data, "val", image_transform_vg(model_visual_size), args.prompt_tokens, args.vg_samples)
         vg_batch_size = args.vg_batch_size
-        vg_vis_dataloader = get_vg_loader(vg_dataset, args, vg_batch_size)
+        vg_vis_dataloader = get_vg_loader(vg_val_dataset, args, vg_batch_size)
         vg_vis_iterator = iter(vg_vis_dataloader)
         vg_vis_batch = next(vg_vis_iterator)
         if args.train_data:
-            vg_dataloader = get_vg_loader(vg_dataset, args, vg_batch_size)
+            vg_train_dataset = VgDataset(args.vg_data, "train", image_transform_vg(model_visual_size), args.prompt_tokens, args.vg_samples)
+            vg_dataloader = get_vg_loader(vg_train_dataset, args, vg_batch_size)
             matcher = HungarianMatcher() 
             weight_dict = {'loss_ce': 1, 'loss_bbox': 5}
             weight_dict['loss_giou'] = 2
-            losses = ['labels', 'boxes', 'cardinality']
+            losses = ['labels','boxes','cardinality']
 
             vgcriterion = SetCriterion(vg_batch_size*args.prompt_tokens, matcher=matcher, weight_dict=weight_dict,
                              eos_coef=0.1, losses=losses)

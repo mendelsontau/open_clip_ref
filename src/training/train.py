@@ -122,7 +122,11 @@ def train_one_epoch(model, object_head, bb_head, vgcriterion, data, vg_dataloade
         step = num_batches_per_epoch * epoch + i
         scheduler(step)
         images, texts = batch
-        vg_batch = next(vg_iter)
+        try:
+            vg_batch = next(vg_iter)
+        except StopIteration:
+            vg_iter = iter(vg_dataloader)
+            vg_batch = next(vg_iter)
         vg_images, valid_objects, vg_bbs, vg_object_descriptions = vg_batch 
         images = torch.cat([images,vg_images])
         images = images.to(device=device, non_blocking=True)
