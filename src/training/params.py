@@ -68,6 +68,12 @@ def parse_args():
         help="number of prompt tokens",
     )
     parser.add_argument(
+        "--open-layers",
+        type=str,
+        default=None,
+        help="open transformer layers.",
+    )
+    parser.add_argument(
         "--val-num-samples",
         type=int,
         default=None,

@@ -168,6 +168,14 @@ def main():
         mark_only_lora_as_trainable(model)
         if args.prompt_tokens > 0:
             model.visual.prompts.requires_grad_()
+        if args.open_layers != None:
+            layers_to_open = args.open_layers.split(",")
+            for layer in layers_to_open:
+                for param in model.visual.transformer.resblocks[int(layer)].parameters():
+                    param.requires_grad_()
+        if not args.lock_image:
+            for param in model.visual.parameters():
+                param.requires_grad_()
     else:
         if args.lock_text:
             for param in model.parameters():
@@ -177,6 +185,12 @@ def main():
                 param.requires_grad_()
         if args.prompt_tokens > 0:
             model.visual.prompts.requires_grad_()
+        if args.open_layers != None:
+            layers_to_open = args.open_layers.split(",")
+            for layer in layers_to_open:
+                for param in model.visual.transformer.resblocks[int(layer)].parameters():
+                    param.requires_grad_()
+
     
 
 

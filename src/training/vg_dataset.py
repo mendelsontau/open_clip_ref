@@ -27,6 +27,7 @@ class VgDataset(Dataset):
         self.clip_image_size = 224
         self.transforms = transforms
         self.num_samples = num_samples
+        self.split = split
         logging.debug('Done loading data.')
 
     def __len__(self):
@@ -82,11 +83,19 @@ class VgDataset(Dataset):
         object_descriptions = [text1 + " " +  " ".join(text2) for text1, text2 in zip(object_attributes,object_names)]
         if missing_objects > 0:
             object_descriptions += ["" for i in range(missing_objects)]
+        if self.split == "val":
+            max_chars = 150
+            object_text = [[ord(c) for c in s] for s in object_descriptions]
+            padding = [[int(36) for i in range(max_chars - len(s))] for s in object_descriptions]
+            object_texts = [lst1 + lst2 for lst1, lst2 in zip(object_text,padding)]
+            text_lengths = [len(s) for s in object_descriptions]
         object_descriptions = tokenize(object_descriptions)
 
 
-
-        return image, valid_objects, bounding_boxes, object_descriptions
+        if self.split == "train":
+            return image, valid_objects, bounding_boxes, object_descriptions
+        else:
+            return image, valid_objects, bounding_boxes, object_descriptions, torch.tensor(object_texts), text_lengths
 
 class VgDatasetIterable(IterableDataset):
     def __init__(self, vg_path, transforms, num_objects,shard_id,shard_size):

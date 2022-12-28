@@ -106,7 +106,10 @@ def create_model(
                 model_cfg['vision_cfg']['timm_model_pretrained'] = True
             else:
                 assert False, 'pretrained image towers currently only supported for timm models'
-
+        model_cfg["lora"] = lora
+        model_cfg["image_lora"] = image_lora
+        model_cfg["text_lora"] = text_lora
+        model_cfg["prompt_tokens"] = prompt_tokens
         model = CLIP(**model_cfg)
 
         pretrained_cfg = {}

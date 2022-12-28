@@ -408,7 +408,10 @@ def evaluate_auxiliary(model,object_head,bb_head,batch,args,epoch):
     model.eval()
     object_head.eval()
     bb_head.eval()
-    vg_images, valid_objects, vg_bbs, vg_object_descriptions = batch
+    vg_images, valid_objects, vg_bbs, vg_object_descriptions, real_texts, text_lengths = batch
+    real_texts = real_texts.flatten(0,1).tolist()
+    real_texts = [[c for c in s if c !=36] for s in real_texts]
+    real_texts = [''.join(chr(i) for i in L) for L in real_texts]
     vg_images = vg_images.to(device=device, non_blocking=True)
     vg_bbs = vg_bbs.to(device=device, non_blocking=True)
     vg_object_descriptions = vg_object_descriptions.to(device=device, non_blocking=True)
@@ -417,9 +420,11 @@ def evaluate_auxiliary(model,object_head,bb_head,batch,args,epoch):
             _, object_tokens, description_embeddings, logit_scale = model(vg_images, vg_object_descriptions.flatten(0,1))
             bb_predictions = bb_head(object_tokens).sigmoid()
             label_embeddings = object_head(object_tokens)
-            label_predictions = logit_scale.mean() * label_embeddings @ description_embeddings.t()
+            label_probs = logit_scale.mean() * label_embeddings @ description_embeddings.t().softmax(dim=-1)
+            label_predictions = torch.argmax(label_probs, dim = -1)
             bb_predictions = box_cxcywh_to_xyxy(bb_predictions) * 224
     bb_predictions = bb_predictions.detach().cpu()
+    label_predictions = label_predictions.detach().cpu()
     vg_images = vg_images.cpu()
     imgs_folder_path = os.path.join(args.checkpoint_path,f'bb_vis-{epoch}')
     if not os.path.exists(imgs_folder_path):
@@ -431,7 +436,9 @@ def evaluate_auxiliary(model,object_head,bb_head,batch,args,epoch):
         img = torch.clamp(img,min=0.0,max=1.0)
         img = convert_image_dtype(img,torch.uint8)
         bb = bb_predictions[i,:5,:]
-        bb_img = draw_bounding_boxes(img,bb)
+        label = label_predictions[i,:5]
+        labels = [real_texts[i] for i in label.tolist()]
+        bb_img = draw_bounding_boxes(img,bb,labels)
         new_image = transforms.ToPILImage()(bb_img)
         new_image.save(full_image_path)
     return
