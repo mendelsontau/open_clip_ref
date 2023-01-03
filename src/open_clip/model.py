@@ -706,6 +706,14 @@ def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_l
 
     convert_weights_to_fp16(model)
     model.load_state_dict(state_dict, strict=False)
+    #model.ln_final.weight = nn.Parameter(state_dict["ln_final.weight"])
+    #model.ln_final.bias = nn.Parameter(state_dict["ln_final.bias"])
+    #model.token_embedding.weight = nn.Parameter(state_dict["token_embedding.weight"])
+    #model.positional_embedding = nn.Parameter(state_dict["positional_embedding"])
+    #model.text_projection = nn.Parameter(state_dict["text_projection"])
+    #model.logit_scale = nn.Parameter(state_dict["logit_scale"])
+
+    #model.transformer.load_state_dict(state_dict, strict=False)
     return model.eval()
 
 

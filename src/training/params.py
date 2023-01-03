@@ -64,7 +64,7 @@ def parse_args():
     parser.add_argument(
         "--prompt-tokens",
         type=int,
-        default=-0,
+        default=0,
         help="number of prompt tokens",
     )
     parser.add_argument(

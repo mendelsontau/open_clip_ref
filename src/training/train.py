@@ -116,24 +116,26 @@ def train_one_epoch(model, object_head, bb_head, vgcriterion, data, vg_dataloade
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
     end = time.time()
-
-    vg_iter = iter(vg_dataloader)
+    if args.vg_data:
+        vg_iter = iter(vg_dataloader)
     for i, batch in enumerate(dataloader):
         step = num_batches_per_epoch * epoch + i
         scheduler(step)
         images, texts = batch
-        try:
-            vg_batch = next(vg_iter)
-        except StopIteration:
-            vg_iter = iter(vg_dataloader)
-            vg_batch = next(vg_iter)
-        vg_images, valid_objects, vg_bbs, vg_object_descriptions = vg_batch 
-        images = torch.cat([images,vg_images])
+        if args.vg_data:
+            try:
+                vg_batch = next(vg_iter)
+            except StopIteration:
+                vg_iter = iter(vg_dataloader)
+                vg_batch = next(vg_iter)
+            vg_images, vg_texts, valid_objects, vg_bbs, vg_object_descriptions = vg_batch 
+            images = torch.cat([images,vg_images])
+            texts = torch.cat([texts, vg_texts])
         images = images.to(device=device, non_blocking=True)
         texts = texts.to(device=device, non_blocking=True)
-
-        class_tokens, targets = organize_batch_classes(vg_object_descriptions, valid_objects, vg_bbs, args, device)
-        class_tokens = class_tokens.to(device=device, non_blocking=True)
+        if args.vg_data and args.vg_loss_lambda > 0.0:
+            class_tokens, targets = organize_batch_classes(vg_object_descriptions, valid_objects, vg_bbs, args, device)
+            class_tokens = class_tokens.to(device=device, non_blocking=True)
 
 
 
@@ -141,23 +143,26 @@ def train_one_epoch(model, object_head, bb_head, vgcriterion, data, vg_dataloade
         optimizer.zero_grad()
 
         with autocast():
-            with torch.no_grad():
-                description_embeddings = model(None, class_tokens)
-                num_random_rows = args.vg_batch_size*args.prompt_tokens + 1 - description_embeddings.shape[0]
-                random_rows = torch.rand(num_random_rows, description_embeddings.shape[1]).to(device=device, non_blocking=True)
-                description_embeddings = torch.cat([description_embeddings,random_rows])
+            if args.vg_data and args.vg_loss_lambda > 0:
+                with torch.no_grad():
+                    description_embeddings = model(None, class_tokens)
+                    num_random_rows = args.vg_batch_size*args.prompt_tokens + 1 - description_embeddings.shape[0]
+                    random_rows = torch.rand(num_random_rows, description_embeddings.shape[1]).to(device=device, non_blocking=True)
+                    description_embeddings = torch.cat([description_embeddings,random_rows])
 
                 
             image_features, object_tokens, text_features, logit_scale = model(images, texts)
-            object_tokens = object_tokens[-vg_images.shape[0]:,:,:]
-            label_embeddings = object_head(object_tokens)
-            label_predictions = logit_scale * label_embeddings @ description_embeddings.t()
-            bb_predictions = bb_head(object_tokens).sigmoid()
-            predictions_dict = {"pred_logits" : label_predictions, "pred_boxes": bb_predictions}
-            loss_dict = vgcriterion(predictions_dict, targets)
-            weight_dict = vgcriterion.weight_dict
-            vg_losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
-            total_loss = loss(image_features[:args.batch_size,:], text_features, logit_scale) + vg_losses * args.vg_loss_lambda
+            vg_losses = 0
+            if args.vg_data and args.vg_loss_lambda > 0.0:
+                object_tokens = object_tokens[-vg_images.shape[0]:,:,:]
+                label_embeddings = object_head(object_tokens)
+                label_predictions = logit_scale * label_embeddings @ description_embeddings.t()
+                bb_predictions = bb_head(object_tokens).sigmoid()
+                predictions_dict = {"pred_logits" : label_predictions, "pred_boxes": bb_predictions}
+                loss_dict = vgcriterion(predictions_dict, targets)
+                weight_dict = vgcriterion.weight_dict
+                vg_losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+            total_loss = loss(image_features, text_features, logit_scale) + vg_losses * args.vg_loss_lambda
 
         if scaler is not None:
             scaler.scale(total_loss).backward()
@@ -408,7 +413,7 @@ def evaluate_auxiliary(model,object_head,bb_head,batch,args,epoch):
     model.eval()
     object_head.eval()
     bb_head.eval()
-    vg_images, valid_objects, vg_bbs, vg_object_descriptions, real_texts, text_lengths = batch
+    vg_images, vg_texts, valid_objects, vg_bbs, vg_object_descriptions, real_texts, text_lengths = batch
     real_texts = real_texts.flatten(0,1).tolist()
     real_texts = [[c for c in s if c !=36] for s in real_texts]
     real_texts = [''.join(chr(i) for i in L) for L in real_texts]

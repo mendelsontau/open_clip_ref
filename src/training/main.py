@@ -35,7 +35,7 @@ from training.logger import setup_logging
 from training.params import parse_args
 from training.scheduler import cosine_lr
 from training.train import train_one_epoch, evaluate, evaluate_winoground, evaluate_auxiliary
-from training.vg_dataset import VgDataset, VgDatasetIterable, get_vg_loader, get_vg_loader_it
+from training.vg_dataset import VgDataset, VgDatasetIterable, VgDatasetText, get_vg_loader, get_vg_loader_it
 from training.vg_model import PredictionHead
 from detr.models.matcher import HungarianMatcher
 from detr.models.detr import SetCriterion
@@ -159,11 +159,11 @@ def main():
     if args.trace:
         model = trace_model(model, batch_size=args.batch_size, device=device)
 
-    if args.lock_image:
-        # lock image tower as per LiT - https://arxiv.org/abs/2111.07991
-        model.lock_image_tower(
-            unlocked_groups=args.lock_image_unlocked_groups,
-            freeze_bn_stats=args.lock_image_freeze_bn_stats)
+    #if args.lock_image:
+    #    # lock image tower as per LiT - https://arxiv.org/abs/2111.07991
+    #    model.lock_image_tower(
+    #        unlocked_groups=args.lock_image_unlocked_groups,
+    #        freeze_bn_stats=args.lock_image_freeze_bn_stats)
     if args.lora >= 0:
         mark_only_lora_as_trainable(model)
         if args.prompt_tokens > 0:
@@ -177,6 +177,10 @@ def main():
             for param in model.visual.parameters():
                 param.requires_grad_()
     else:
+       # lock image tower as per LiT - https://arxiv.org/abs/2111.07991
+        model.lock_image_tower(
+            unlocked_groups=args.lock_image_unlocked_groups,
+            freeze_bn_stats=args.lock_image_freeze_bn_stats)
         if args.lock_text:
             for param in model.parameters():
                 param.requires_grad = False
@@ -291,13 +295,13 @@ def main():
 
     #vg data
     if args.vg_data:
-        vg_val_dataset = VgDataset(args.vg_data, "val", image_transform_vg(model_visual_size), args.prompt_tokens, args.vg_samples)
+        vg_val_dataset = VgDatasetText(args.vg_data, "val", image_transform_vg(model_visual_size), args.prompt_tokens, args.vg_samples)
         vg_batch_size = args.vg_batch_size
         vg_vis_dataloader = get_vg_loader(vg_val_dataset, args, vg_batch_size)
         vg_vis_iterator = iter(vg_vis_dataloader)
         vg_vis_batch = next(vg_vis_iterator)
         if args.train_data:
-            vg_train_dataset = VgDataset(args.vg_data, "train", image_transform_vg(model_visual_size), args.prompt_tokens, args.vg_samples)
+            vg_train_dataset = VgDatasetText(args.vg_data, "train", image_transform_vg(model_visual_size), args.prompt_tokens, args.vg_samples)
             vg_dataloader = get_vg_loader(vg_train_dataset, args, vg_batch_size)
             matcher = HungarianMatcher() 
             weight_dict = {'loss_ce': 1, 'loss_bbox': 5}
@@ -307,6 +311,9 @@ def main():
             vgcriterion = SetCriterion(vg_batch_size*args.prompt_tokens, matcher=matcher, weight_dict=weight_dict,
                              eos_coef=0.1, losses=losses)
             vgcriterion.to(args.device)
+    else:
+        vgcriterion = None
+        vg_dataloader = None
 
     
 
@@ -357,7 +364,7 @@ def main():
             vl_eval.start()
         if args.winoground_frequency > 0:
             evaluate_winoground(model, preprocess_val, start_epoch, args, writer)
-            if args.vg_data:
+            if args.vg_data and args.vg_loss_lambda > 0.0:
                 evaluate_auxiliary(model, object_head, bb_head, vg_vis_batch,args,start_epoch)
         return
 
@@ -382,7 +389,7 @@ def main():
                 vl_eval.start()
             if args.winoground_frequency > 0 and completed_epoch % args.winoground_frequency == 0:
                 evaluate_winoground(model, preprocess_val, completed_epoch, args, writer)
-                if args.vg_data:
+                if args.vg_data and args.vg_loss_lambda > 0.0:
                     evaluate_auxiliary(model, object_head, bb_head, vg_vis_batch, args, completed_epoch)
 
         # Saving checkpoints.

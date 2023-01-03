@@ -10,6 +10,16 @@ from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler, IterableD
 from torch.utils.data.distributed import DistributedSampler
 import math
 
+def repair_text(text):
+    text_arr = text.split()
+    new_text_arr = []
+    for i in range(len(text_arr) - 1):
+        if text_arr[i] != text_arr[i+1]:
+            new_text_arr.append(text_arr[i])
+    new_text_arr.append(text_arr[-1])
+    new_text = " ".join(new_text_arr)
+    return new_text
+
 
 class VgDataset(Dataset):
     def __init__(self, vg_path, split, transforms, num_objects, num_samples):
@@ -96,6 +106,100 @@ class VgDataset(Dataset):
             return image, valid_objects, bounding_boxes, object_descriptions
         else:
             return image, valid_objects, bounding_boxes, object_descriptions, torch.tensor(object_texts), text_lengths
+
+
+class VgDatasetText(Dataset):
+    def __init__(self, vg_path, split, transforms, num_objects, num_samples):
+        logging.debug(f'Loading data from visual genome.')
+        f = open(os.path.join(vg_path,"vg_text_dataset_" + split +  ".json"))
+        self.data = json.load(f)
+        self.vg_path = vg_path
+        self.clip_image_size = 224
+        self.transforms = transforms
+        self.num_samples = num_samples
+        self.split = split
+        self.num_objects = num_objects if num_objects > 0 else 10
+        logging.debug('Done loading data.')
+
+    def __len__(self):
+        if self.num_samples is None:
+            return len(self.data)
+        else:
+            return self.num_samples
+
+    def __getitem__(self, idx):
+        #load image
+        image_url = self.data[idx]["image_data"]["url"]
+        crop_dimensions = self.data[idx]["to_crop"]
+        min_x = crop_dimensions[0]
+        min_y = crop_dimensions[1]
+        max_x = crop_dimensions[2]
+        max_y = crop_dimensions[3]
+        image_h = max_y - min_y
+        image_w = max_x - min_x
+        url_parts = image_url.split("/")
+        folder = url_parts[5]
+        filename = url_parts[6]
+        image_path = os.path.join(self.vg_path,folder,folder,filename)
+
+        image = Image.open(image_path)
+        image = image.crop(crop_dimensions)
+        image = self.transforms(image)
+
+        text = self.data[idx]["text"]
+        text = repair_text(text)
+
+
+
+        #load objects and choose randomly
+        objects = self.data[idx]["objects"]
+        missing_objects = self.num_objects - len(objects)
+        valid_objects = torch.tensor(self.num_objects - missing_objects, dtype=torch.long)
+        
+        #prepare bounding boxes
+        objects_bbs = [[ob["x"],ob["y"],ob["w"], ob["h"]] for ob in objects]
+        for obj in objects_bbs:
+            new_x1 = obj[0]
+            new_y1 = obj[1]
+            new_x2 = obj[0] + obj[2]
+            new_y2 = obj[1] + obj[3]
+            if obj[0] < min_x:
+                new_x1 = min_x
+            if obj[1] < min_y:
+                new_y1 = min_y
+            if obj[0] + obj[2] > max_x:
+                new_x2 = max_x
+            if obj[1] + obj[3] > max_y:
+                new_y2 = max_y
+            obj[0] = new_x1 - min_x
+            obj[1] = new_y1 - min_y
+            obj[2] = new_x2 - new_x1
+            obj[3] = new_y2 - new_y1
+            
+        bounding_boxes = [[(ob[0] + 0.5*ob[2])/image_w,(ob[1] + 0.5*ob[3])/image_h,min((ob[2])/image_w,1.0),min((ob[3])/image_h,1.0)] for ob in objects_bbs]
+        if missing_objects > 0:
+            bounding_boxes += [[0.0,0.0,0.0,0.0] for i in range(missing_objects)]
+        bounding_boxes = torch.tensor(bounding_boxes)
+
+        #prepare object descriptions
+        object_descriptions = [obj["attributes"][0] + " " + obj["names"][0] if "attributes" in obj else obj["names"][0] for obj in objects]
+        object_descriptions = [repair_text(desc)for desc in object_descriptions]
+        if missing_objects > 0:
+            object_descriptions += ["" for i in range(missing_objects)]
+        if self.split == "val":
+            max_chars = 150
+            object_text = [[ord(c) for c in s] for s in object_descriptions]
+            padding = [[int(36) for i in range(max_chars - len(s))] for s in object_descriptions]
+            object_texts = [lst1 + lst2 for lst1, lst2 in zip(object_text,padding)]
+            text_lengths = [len(s) for s in object_descriptions]
+        object_descriptions = tokenize(object_descriptions)
+        text = tokenize([text])[0]
+
+
+        if self.split == "train":
+            return image, text, valid_objects, bounding_boxes, object_descriptions
+        else:
+            return image, text, valid_objects, bounding_boxes, object_descriptions, torch.tensor(object_texts), text_lengths
 
 class VgDatasetIterable(IterableDataset):
     def __init__(self, vg_path, transforms, num_objects,shard_id,shard_size):
