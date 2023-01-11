@@ -162,8 +162,8 @@ def train_one_epoch(model, object_heads, bb_heads, vgcriterion, data, vg_dataloa
             image_features, object_tokens, text_features, logit_scale = model(images, texts)
             vg_losses = 0
             if args.vg_data and args.vg_loss_lambda > 0.0:
-                label_embeddings = torch.stack([object_head(image_features) for object_head in object_heads])
-                bb_predictions = torch.stack([bb_head(image_features).sigmoid() for bb_head in bb_heads])
+                label_embeddings = torch.stack([object_head(image_features[-vg_images.shape[0]:,]) for object_head in object_heads])
+                bb_predictions = torch.stack([bb_head(image_features[-vg_images.shape[0]:,]).sigmoid() for bb_head in bb_heads])
                 label_predictions = logit_scale * label_embeddings @ description_embeddings.t()
                 predictions_dict = {"pred_logits" : label_predictions, "pred_boxes": bb_predictions}
                 loss_dict = vgcriterion(predictions_dict, targets)
