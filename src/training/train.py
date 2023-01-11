@@ -92,13 +92,14 @@ def organize_batch_classes(object_descriptions, valid_objects, vg_bbs, args, dev
 
 
 
-def train_one_epoch(model, object_head, bb_head, vgcriterion, data, vg_dataloader, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
+def train_one_epoch(model, object_heads, bb_heads, vgcriterion, data, vg_dataloader, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
     device = torch.device(args.device)
     autocast = get_autocast(args.precision)
 
     model.train()
-    object_head.train()
-    bb_head.train()
+    for i in range(len(object_heads)):
+        object_heads[i].train()
+        bb_heads[i].train()
     loss = ClipLoss(
         local_loss=args.local_loss,
         gather_with_grad=args.gather_with_grad,
@@ -161,10 +162,9 @@ def train_one_epoch(model, object_head, bb_head, vgcriterion, data, vg_dataloade
             image_features, object_tokens, text_features, logit_scale = model(images, texts)
             vg_losses = 0
             if args.vg_data and args.vg_loss_lambda > 0.0:
-                object_tokens = object_tokens[-vg_images.shape[0]:,:,:]
-                label_embeddings = object_head(object_tokens)
+                label_embeddings = torch.stack([object_head(image_features) for object_head in object_heads])
+                bb_predictions = torch.stack([bb_head(image_features).sigmoid() for bb_head in bb_heads])
                 label_predictions = logit_scale * label_embeddings @ description_embeddings.t()
-                bb_predictions = bb_head(object_tokens).sigmoid()
                 predictions_dict = {"pred_logits" : label_predictions, "pred_boxes": bb_predictions}
                 loss_dict = vgcriterion(predictions_dict, targets)
                 weight_dict = vgcriterion.weight_dict
@@ -429,7 +429,7 @@ def evaluate_winoground(model, clip_processor, epoch, args, tb_writer=None):
             for name, val in metrics.items():
                 wandb.log({f"val/{name}": val, 'epoch': epoch})
 
-def evaluate_auxiliary(model,object_head,bb_head,batch,args,epoch):
+def evaluate_auxiliary(model,object_heads,bb_heads,batch,args,epoch):
     autocast = get_autocast(args.precision)
     inv_trans = transforms.Compose([ transforms.Normalize(mean = [ 0., 0., 0. ],
                                                      std = [ 1/0.26862954, 1/0.26130258, 1/0.27577711 ]),
@@ -438,8 +438,9 @@ def evaluate_auxiliary(model,object_head,bb_head,batch,args,epoch):
                                ])
     device = torch.device(args.device)
     model.eval()
-    object_head.eval()
-    bb_head.eval()
+    for i in range(len(object_heads)):
+        object_heads[i].eval()
+        bb_heads[i].eval()
     vg_images, vg_texts, valid_objects, vg_bbs, vg_object_descriptions, real_texts, text_lengths = batch
     real_texts = real_texts.flatten(0,1).tolist()
     real_texts = [[c for c in s if c !=36] for s in real_texts]
@@ -449,9 +450,9 @@ def evaluate_auxiliary(model,object_head,bb_head,batch,args,epoch):
     vg_object_descriptions = vg_object_descriptions.to(device=device, non_blocking=True)
     with torch.no_grad():
         with autocast():
-            _, object_tokens, description_embeddings, logit_scale = model(vg_images, vg_object_descriptions.flatten(0,1))
-            bb_predictions = bb_head(object_tokens).sigmoid()
-            label_embeddings = object_head(object_tokens)
+            image_features, object_tokens, description_embeddings, logit_scale = model(vg_images, vg_object_descriptions.flatten(0,1))
+            label_embeddings = torch.stack([object_head(image_features) for object_head in object_heads])
+            bb_predictions = torch.stack([bb_head(image_features).sigmoid() for bb_head in bb_heads])
             label_probs = logit_scale.mean() * label_embeddings @ description_embeddings.t().softmax(dim=-1)
             label_predictions = torch.argmax(label_probs, dim = -1)
             bb_predictions = box_cxcywh_to_xyxy(bb_predictions) * 224

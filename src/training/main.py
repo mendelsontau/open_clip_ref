@@ -152,8 +152,11 @@ def main():
     model_visual_size = model.visual.image_size
 
     #vg prediction heads
-    object_head = PredictionHead(768,512).to(args.device)
-    bb_head = PredictionHead(768,4).to(args.device)
+    object_heads = []
+    bb_heads = []
+    for i in range(10):
+        bb_heads.append(PredictionHead(512,4).to(args.device))
+        object_heads.append(PredictionHead(512,512).to(args.device))
 
 
     if args.trace:
@@ -224,8 +227,9 @@ def main():
             # this doesn't exist in older PyTorch, arg only added if enabled
             ddp_args['static_graph'] = True
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], **ddp_args, find_unused_parameters=True)
-        object_head = torch.nn.parallel.DistributedDataParallel(object_head, device_ids=[device], **ddp_args)
-        bb_head = torch.nn.parallel.DistributedDataParallel(bb_head, device_ids=[device], **ddp_args)
+        for i in range(len(object_heads)):
+            object_heads[i] = torch.nn.parallel.DistributedDataParallel(object_heads[i], device_ids=[device], **ddp_args)
+            bb_heads[i] = torch.nn.parallel.DistributedDataParallel(bb_heads[i], device_ids=[device], **ddp_args)
 
 
     # create optimizer and scaler
@@ -269,14 +273,15 @@ def main():
                 if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
                     sd = {k[len('module.'):]: v for k, v in sd.items()}
                 model.load_state_dict(sd)
-                sd = checkpoint["object_state_dict"]
-                if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
-                    sd = {k[len('module.'):]: v for k, v in sd.items()}
-                object_head.load_state_dict(sd)
-                sd = checkpoint["bb_state_dict"]
-                if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
-                    sd = {k[len('module.'):]: v for k, v in sd.items()}
-                bb_head.load_state_dict(sd)
+                for i in range(10):
+                    sd = checkpoint["object_state_dict" + str(i)]
+                    if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                        sd = {k[len('module.'):]: v for k, v in sd.items()}
+                    object_heads[i].load_state_dict(sd)
+                    sd = checkpoint["bb_state_dict" + str(i)]
+                    if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                        sd = {k[len('module.'):]: v for k, v in sd.items()}
+                    bb_heads[i].load_state_dict(sd)
                 if optimizer is not None:
                     optimizer.load_state_dict(checkpoint["optimizer"])
                 if scaler is not None and 'scaler' in checkpoint:
@@ -314,9 +319,6 @@ def main():
     else:
         vgcriterion = None
         vg_dataloader = None
-
-    
-
 
     # create scheduler if train
     scheduler = None
@@ -365,14 +367,14 @@ def main():
         if args.winoground_frequency > 0:
             evaluate_winoground(model, preprocess_val, start_epoch, args, writer)
             if args.vg_data and args.vg_loss_lambda > 0.0:
-                evaluate_auxiliary(model, object_head, bb_head, vg_vis_batch,args,start_epoch)
+                evaluate_auxiliary(model, object_heads, bb_heads, vg_vis_batch, args, start_epoch)
         return
 
     for epoch in range(start_epoch, args.epochs):
         if is_master(args):
             logging.info(f'Start epoch {epoch}')
 
-        train_one_epoch(model, object_head, bb_head, vgcriterion, data, vg_dataloader, epoch, optimizer, scaler, scheduler, args, writer)
+        train_one_epoch(model, object_heads, bb_heads, vgcriterion, data, vg_dataloader, epoch, optimizer, scaler, scheduler, args, writer)
         completed_epoch = epoch + 1
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):
@@ -390,7 +392,7 @@ def main():
             if args.winoground_frequency > 0 and completed_epoch % args.winoground_frequency == 0:
                 evaluate_winoground(model, preprocess_val, completed_epoch, args, writer)
                 if args.vg_data and args.vg_loss_lambda > 0.0:
-                    evaluate_auxiliary(model, object_head, bb_head, vg_vis_batch, args, completed_epoch)
+                    evaluate_auxiliary(model, object_heads, bb_heads, vg_vis_batch, args, completed_epoch)
 
         # Saving checkpoints.
         if args.save_logs:
@@ -398,10 +400,12 @@ def main():
                 "epoch": completed_epoch,
                 "name": args.name,
                 "state_dict": model.state_dict(),
-                "object_state_dict": object_head.state_dict(),
-                "bb_state_dict": bb_head.state_dict(),
                 "optimizer": optimizer.state_dict(),
             }
+            for i in range(10):
+                checkpoint_dict["object_state_dict" + str(i)] =  object_heads[i].state_dict(),
+                checkpoint_dict["bb_state_dict" + str(i)] = bb_heads[i].state_dict()
+
             if scaler is not None:
                 checkpoint_dict["scaler"] = scaler.state_dict()
 
