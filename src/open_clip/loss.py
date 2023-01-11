@@ -119,3 +119,28 @@ class ClipLoss(nn.Module):
             F.cross_entropy(logits_per_text, labels)
             ) / 2
         return total_loss
+
+class HNLoss(nn.Module):
+    def __init__(
+            self,
+            alpha = 1.0
+    ):
+        super().__init__()
+        self.alpha = alpha
+
+
+    def forward(self, image_features, text_features, logit_scale, ignore_mask, vg_batch_size):
+        vg_image_features = image_features[-vg_batch_size:,:]
+        positive_text_features = text_features[-2*vg_batch_size:-vg_batch_size,:]
+        negative_text_features = text_features[-vg_batch_size:,:]
+        positive_similarity = torch.diagonal(logit_scale * vg_image_features @ positive_text_features.T)
+        negative_similarity = torch.diagonal(logit_scale * vg_image_features @ negative_text_features.T)
+        positive_similarity = torch.exp(positive_similarity)
+        negative_similarity = torch.exp(negative_similarity)
+        denominator = positive_similarity + negative_similarity
+        loss_per_sample = -torch.log(torch.div(positive_similarity,denominator))
+        loss = self.alpha * torch.dot(loss_per_sample, ignore_mask)/vg_batch_size
+        return loss
+
+
+

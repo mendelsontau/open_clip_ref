@@ -301,7 +301,7 @@ def main():
         vg_vis_iterator = iter(vg_vis_dataloader)
         vg_vis_batch = next(vg_vis_iterator)
         if args.train_data:
-            vg_train_dataset = VgDatasetText(args.vg_data, "train", image_transform_vg(model_visual_size), args.prompt_tokens, args.vg_samples)
+            vg_train_dataset = VgDatasetText(args.vg_data, "train", image_transform_vg(model_visual_size), args.prompt_tokens, args.vg_samples, args.negatives)
             vg_dataloader = get_vg_loader(vg_train_dataset, args, vg_batch_size)
             matcher = HungarianMatcher() 
             weight_dict = {'loss_ce': 1, 'loss_bbox': 5}

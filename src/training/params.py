@@ -60,7 +60,13 @@ def parse_args():
         default=False,
         action="store_true",
         help="apply lora to text encoder"
-    )      
+    )
+    parser.add_argument(
+        "--negatives",
+        default=False,
+        action="store_true",
+        help="add negative texts"
+    )        
     parser.add_argument(
         "--prompt-tokens",
         type=int,
@@ -173,12 +179,12 @@ def parse_args():
         help="Use this flag to skip the learning rate decay.",
     )
     parser.add_argument(
-        "--save-frequency", type=int, default=1, help="How often to save checkpoints."
+        "--save-frequency", type=int, default=16, help="How often to save checkpoints."
     )
     parser.add_argument(
         "--save-most-recent",
         action="store_true",
-        default=False,
+        default=True,
         help="Always save the most recent model trained to epoch_latest.pt.",
     )
     parser.add_argument(

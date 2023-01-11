@@ -13,7 +13,7 @@ try:
 except ImportError:
     wandb = None
 
-from open_clip import ClipLoss, tokenize
+from open_clip import ClipLoss, tokenize, HNLoss
 from .distributed import is_master
 from .zero_shot import zero_shot_eval
 from .precision import get_autocast
@@ -107,6 +107,8 @@ def train_one_epoch(model, object_head, bb_head, vgcriterion, data, vg_dataloade
         world_size=args.world_size,
         use_horovod=args.horovod)
 
+    neg_loss = HNLoss()
+
     data['train'].set_epoch(epoch)  # set epoch in process safe manner via sampler or shared_epoch
     dataloader = data['train'].dataloader
     num_batches_per_epoch = dataloader.num_batches
@@ -128,9 +130,14 @@ def train_one_epoch(model, object_head, bb_head, vgcriterion, data, vg_dataloade
             except StopIteration:
                 vg_iter = iter(vg_dataloader)
                 vg_batch = next(vg_iter)
-            vg_images, vg_texts, valid_objects, vg_bbs, vg_object_descriptions = vg_batch 
+            if args.negatives:
+                vg_images, vg_texts, valid_objects, vg_bbs, vg_object_descriptions, neg_texts, neg_masks = vg_batch 
+                neg_masks = neg_masks.to(device=device, non_blocking=True)
+                texts = torch.cat([texts, vg_texts, neg_texts])
+            else:
+                vg_images, vg_texts, valid_objects, vg_bbs, vg_object_descriptions = vg_batch 
+                texts = torch.cat([texts, vg_texts])
             images = torch.cat([images,vg_images])
-            texts = torch.cat([texts, vg_texts])
         images = images.to(device=device, non_blocking=True)
         texts = texts.to(device=device, non_blocking=True)
         if args.vg_data and args.vg_loss_lambda > 0.0:
@@ -162,7 +169,9 @@ def train_one_epoch(model, object_head, bb_head, vgcriterion, data, vg_dataloade
                 loss_dict = vgcriterion(predictions_dict, targets)
                 weight_dict = vgcriterion.weight_dict
                 vg_losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
-            total_loss = loss(image_features, text_features, logit_scale) + vg_losses * args.vg_loss_lambda
+            total_loss = loss(image_features, text_features[:-vg_images.shape[0],:], logit_scale) + vg_losses * args.vg_loss_lambda
+            if args.negatives:
+                total_loss += neg_loss(image_features, text_features, logit_scale, neg_masks, vg_images.shape[0])
 
         if scaler is not None:
             scaler.scale(total_loss).backward()
@@ -322,12 +331,24 @@ def evaluate(model, data, epoch, args, tb_writer=None):
 def evaluate_winoground(model, clip_processor, epoch, args, tb_writer=None):
     autocast = get_autocast(args.precision)
     model.eval()
-    metrics = {}
     #if not is_master(args):
     #    return metrics
     auth_token = "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"
     winoground = load_dataset("facebook/winoground", use_auth_token=auth_token)["test"]
-    winoground_clip_scores = []
+    categories_clip_scores = {}
+    categories_clip_scores["All Dataset"] = []
+    categories_clip_scores["Ambiguously Correct"] = []
+    categories_clip_scores["Visually Difficult"] = []
+    categories_clip_scores["Unusual Text"] = []
+    categories_clip_scores["Complex Reasoning"] = []
+    categories_clip_scores["Unusual Image"] = []
+    categories_clip_scores["Non Minimal"] = []
+    categories_clip_scores["No Tag"] = []
+
+    #load tag assignments
+    f = open("Winoground/tag_assignments.json")
+    tag_assignments = json.load(f)
+
     for example in tqdm(winoground):
     # Note that some images in winoground are RGBA and some are RGB. Need to convert all to RGB with .convert('RGB')
     # Note that we could run this example through CLIP as a batch, but I want to drive the point home that we get four independent image-caption scores for each example
@@ -349,7 +370,13 @@ def evaluate_winoground(model, clip_processor, epoch, args, tb_writer=None):
         clip_score_c1_i0 = logits_per_image[0,1].item()
         clip_score_c0_i1 = logits_per_image[1,0].item()
         clip_score_c1_i1 = logits_per_image[1,1].item()
-        winoground_clip_scores.append({"id" : example["id"], "c0_i0": clip_score_c0_i0, "c0_i1": clip_score_c0_i1, "c1_i0": clip_score_c1_i0, "c1_i1": clip_score_c1_i1})
+        example_id = str(example["id"])
+        all_tags = tag_assignments[example_id]
+        if len(all_tags) == 0:
+            all_tags = ["No Tag"]
+        all_tags.append("All Dataset")
+        for tag in all_tags:
+            categories_clip_scores[tag].append({"id" : example["id"], "c0_i0": clip_score_c0_i0, "c0_i1": clip_score_c0_i1, "c1_i0": clip_score_c1_i0, "c1_i1": clip_score_c1_i1})
     
     def text_correct(result):
         return result["c0_i0"] > result["c1_i0"] and result["c1_i1"] > result["c0_i1"]
@@ -360,47 +387,47 @@ def evaluate_winoground(model, clip_processor, epoch, args, tb_writer=None):
     def group_correct(result):
         return image_correct(result) and text_correct(result)
 
-    text_correct_count = 0
-    image_correct_count = 0
-    group_correct_count = 0
-    for result in winoground_clip_scores:
-        text_correct_count += 1 if text_correct(result) else 0
-        image_correct_count += 1 if image_correct(result) else 0
-        group_correct_count += 1 if group_correct(result) else 0
+    for category in categories_clip_scores:
+        category_clip_scores = categories_clip_scores[category]
+        text_correct_count = 0
+        image_correct_count = 0
+        group_correct_count = 0
+        for result in category_clip_scores:
+            text_correct_count += 1 if text_correct(result) else 0
+            image_correct_count += 1 if image_correct(result) else 0
+            group_correct_count += 1 if group_correct(result) else 0
 
-    denominator = len(winoground_clip_scores)
-    winoground_text_score = text_correct_count/denominator
-    winoground_image_score = image_correct_count/denominator
-    winoground_group_score = group_correct_count/denominator
+        denominator = len(category_clip_scores)
+        winoground_text_score = text_correct_count/denominator
+        winoground_image_score = image_correct_count/denominator
+        winoground_group_score = group_correct_count/denominator
 
-    metrics.update({"winoground_text_score": text_correct_count/denominator, 
-    "winoground_image_score": image_correct_count/denominator,
-    "winoground_group_score": group_correct_count/denominator,
-     "epoch": epoch})
+        metrics = {category + " text score": text_correct_count/denominator, 
+        category + " image score": image_correct_count/denominator,
+        category + " group score": group_correct_count/denominator,
+        "epoch": epoch}
 
-    if not metrics:
-        return metrics
+        if not metrics:
+            return metrics
 
-    logging.info(
-        f"winoground Eval Epoch: {epoch} "
+        logging.info(
+        f"winoground " + category + " Eval Epoch: {epoch} "
         + "\t".join([f"{k}: {round(v, 4):.4f}" for k, v in metrics.items()])
-    )
+        )
 
-    if args.save_logs:
-        for name, val in metrics.items():
-            if tb_writer is not None:
-                tb_writer.add_scalar(f"val/{name}", val, epoch)
+        if args.save_logs:
+            for name, val in metrics.items():
+                if tb_writer is not None:
+                    tb_writer.add_scalar(f"val/{name}", val, epoch)
 
-        with open(os.path.join(args.checkpoint_path, "results.jsonl"), "a+") as f:
-            f.write(json.dumps(metrics))
-            f.write("\n")
+            with open(os.path.join(args.checkpoint_path, "results.jsonl"), "a+") as f:
+                f.write(json.dumps(metrics))
+                f.write("\n")
 
-    if args.wandb:
-        assert wandb is not None, 'Please install wandb.'
-        for name, val in metrics.items():
-            wandb.log({f"val/{name}": val, 'epoch': epoch})
-
-    return metrics
+        if args.wandb:
+            assert wandb is not None, 'Please install wandb.'
+            for name, val in metrics.items():
+                wandb.log({f"val/{name}": val, 'epoch': epoch})
 
 def evaluate_auxiliary(model,object_head,bb_head,batch,args,epoch):
     autocast = get_autocast(args.precision)
