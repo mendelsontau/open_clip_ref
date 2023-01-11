@@ -163,13 +163,18 @@ def train_one_epoch(model, object_heads, bb_heads, vgcriterion, data, vg_dataloa
             vg_losses = 0
             if args.vg_data and args.vg_loss_lambda > 0.0:
                 label_embeddings = torch.stack([object_head(image_features[-vg_images.shape[0]:,]) for object_head in object_heads])
+                label_embeddings = torch.permute(label_embeddings,(1,0,2))
                 bb_predictions = torch.stack([bb_head(image_features[-vg_images.shape[0]:,]).sigmoid() for bb_head in bb_heads])
+                bb_predictions = torch.permute(bb_predictions,(1,0,2))
                 label_predictions = logit_scale * label_embeddings @ description_embeddings.t()
                 predictions_dict = {"pred_logits" : label_predictions, "pred_boxes": bb_predictions}
                 loss_dict = vgcriterion(predictions_dict, targets)
                 weight_dict = vgcriterion.weight_dict
                 vg_losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
-            total_loss = loss(image_features, text_features[:-vg_images.shape[0],:], logit_scale) + vg_losses * args.vg_loss_lambda
+            if args.negatives:
+                total_loss = loss(image_features, text_features[:-vg_images.shape[0],:], logit_scale) + vg_losses * args.vg_loss_lambda
+            else:
+                total_loss = loss(image_features, text_features, logit_scale) + vg_losses * args.vg_loss_lambda
             if args.negatives:
                 total_loss += neg_loss(image_features, text_features, logit_scale, neg_masks, vg_images.shape[0])
 
@@ -451,8 +456,10 @@ def evaluate_auxiliary(model,object_heads,bb_heads,batch,args,epoch):
     with torch.no_grad():
         with autocast():
             image_features, object_tokens, description_embeddings, logit_scale = model(vg_images, vg_object_descriptions.flatten(0,1))
-            label_embeddings = torch.stack([object_head(image_features) for object_head in object_heads])
-            bb_predictions = torch.stack([bb_head(image_features).sigmoid() for bb_head in bb_heads])
+            label_embeddings = torch.stack([object_head(image_features[-vg_images.shape[0]:,]) for object_head in object_heads])
+            label_embeddings = torch.permute(label_embeddings,(1,0,2))
+            bb_predictions = torch.stack([bb_head(image_features[-vg_images.shape[0]:,]).sigmoid() for bb_head in bb_heads])
+            bb_predictions = torch.permute(bb_predictions,(1,0,2))
             label_probs = logit_scale.mean() * label_embeddings @ description_embeddings.t().softmax(dim=-1)
             label_predictions = torch.argmax(label_probs, dim = -1)
             bb_predictions = box_cxcywh_to_xyxy(bb_predictions) * 224
