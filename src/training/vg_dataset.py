@@ -9,6 +9,7 @@ from open_clip import tokenize
 from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler, IterableDataset, get_worker_info
 from torch.utils.data.distributed import DistributedSampler
 import math
+import copy
 
 def repair_text(text):
     text_arr = text.split()
@@ -49,7 +50,72 @@ def create_text_from_graph(walks, all_objects_dict):
         text += ". "
     return text
 
-def apply_negative_type_1(walks, relations_transitivity):
+def apply_negative_type_4(all_objects_list, all_objects_dict, attributes_annotations):
+    success = False
+    random.shuffle(all_objects_list)
+    for chosen_object in all_objects_list:
+        object_id = chosen_object["object_id"]
+        if "attributes" not in chosen_object:
+            continue
+        for att in chosen_object["attributes"]:
+            if att not in attributes_annotations:
+                continue
+            att_annotation = attributes_annotations[att]
+            if "negations" not in att_annotation:
+                continue
+            negatives = att_annotation["negations"]
+            if len(negatives) == 0:
+                continue
+            success = True
+            chosen_negative = random.choice(negatives)
+            all_objects_dict[str(object_id)]["attributes"][0] = chosen_negative
+            break
+        if success == True:
+            break
+    return success, all_objects_dict
+
+
+def apply_negative_type_3(all_objects_list, all_objects_dict, attributes_annotations):
+    success = False
+    random.shuffle(all_objects_list)
+    for chosen_object in all_objects_list:
+        if success == True:
+            break
+        first_object_id = chosen_object["object_id"]
+        if "attributes" not in chosen_object:
+            continue
+        for att in chosen_object["attributes"]:
+            if success == True:
+                break
+            if att not in attributes_annotations:
+                continue
+            att_annotation = attributes_annotations[att]
+            if "negations" not in att_annotation:
+                continue
+            negatives = att_annotation["negations"]
+            if len(negatives) == 0:
+                continue
+            for chosen_object2 in all_objects_list:
+                if success == True:
+                    break
+                second_object_id = chosen_object2["object_id"]
+                if second_object_id == first_object_id:
+                    continue
+                if "attributes" not in chosen_object2:
+                    continue
+                for att2 in chosen_object2["attributes"]:
+                    if att2 in negatives and all_objects_dict[str(first_object_id)]["names"][0] != all_objects_dict[str(second_object_id)]["names"][0]:
+                        all_objects_dict[str(first_object_id)]["attributes"][0] = att2
+                        all_objects_dict[str(second_object_id)]["attributes"][0] = att
+                        success = True
+                        break
+    return success, all_objects_dict
+
+
+        
+
+
+def apply_negative_type_1(walks, relations_annotations):
     #find all relationships in the graph
     all_relations = []
     for w in range(len(walks)):
@@ -68,11 +134,39 @@ def apply_negative_type_1(walks, relations_transitivity):
         subject_id = rel["subject_id"]
         object_id = rel["object_id"]
         predicate = rel["predicate"]
-        if predicate in relations_transitivity:
-            if relations_transitivity[predicate] == "yes":
+        if predicate in relations_annotations:
+            if relations_annotations[predicate]["symmetry"] == "yes":
                 success = True
                 walks[rel_w][rel_r]["subject_id"] = object_id
                 walks[rel_w][rel_r]["object_id"] = subject_id
+        
+        if success:
+            break
+    return success, walks
+
+def apply_negative_type_2(walks, relations_annotations):
+    #find all relationships in the graph
+    all_relations = []
+    for w in range(len(walks)):
+        walk = walks[w]
+        for r in range(len(walk)):
+            rel = walk[r]
+            if rel["object_id"] != -1:
+                all_relations.append((rel,w,r))
+
+    random.shuffle(all_relations)
+    for rand_rel in all_relations:
+        success = False
+        rel = rand_rel[0]
+        rel_w = rand_rel[1]
+        rel_r = rand_rel[2]
+        predicate = rel["predicate"]
+        if predicate in relations_annotations:
+            if relations_annotations[predicate]["negations"] != "" :
+                negations = relations_annotations[predicate]["negations"].split(",")
+                new_predicate = random.choice(negations)
+                success = True
+                walks[rel_w][rel_r]["predicate"] = new_predicate
         
         if success:
             break
@@ -169,10 +263,12 @@ class VgDataset(Dataset):
 class VgDatasetText(Dataset):
     def __init__(self, vg_path, split, transforms, num_objects, num_samples, negatives = False):
         logging.debug(f'Loading data from visual genome.')
-        f = open(os.path.join(vg_path,"vg_new_text_dataset_" + split +  ".json"))
+        f = open(os.path.join(vg_path,"vg_100k_" + split +  ".json"))
         self.data = json.load(f)
-        f = open(os.path.join(vg_path,"relations_transitivity.json"))
-        self.relations_transitivity = json.load(f)
+        f = open(os.path.join(vg_path,"relations_annotations.json"))
+        self.relations_annotations = json.load(f)
+        f = open(os.path.join(vg_path,"attributes_annotations.json"))
+        self.attributes_annotations = json.load(f)
         self.vg_path = vg_path
         self.clip_image_size = 224
         self.transforms = transforms
@@ -219,11 +315,27 @@ class VgDatasetText(Dataset):
         text = create_text_from_graph(walks, all_objects_dict)
 
         if self.negatives and self.split == "train":
-            success, new_walks = apply_negative_type_1(walks, self.relations_transitivity)
+            start_index = random.randint(0,3)
+            for i in range(start_index,start_index + 4):
+                negative_type = i % 4
+                if negative_type == 0:
+                    success, new_walks = apply_negative_type_1(copy.deepcopy(walks), self.relations_annotations)
+                    new_all_objects_dict = all_objects_dict
+                if negative_type == 1:
+                    success, new_walks = apply_negative_type_2(copy.deepcopy(walks), self.relations_annotations)
+                    new_all_objects_dict = all_objects_dict
+                if negative_type == 2:
+                    success, new_all_objects_dict = apply_negative_type_3(copy.deepcopy(objects), copy.deepcopy(all_objects_dict), self.attributes_annotations)
+                    new_walks = walks
+                if negative_type == 3:
+                    success, new_all_objects_dict = apply_negative_type_4(copy.deepcopy(objects), copy.deepcopy(all_objects_dict), self.attributes_annotations)
+                    new_walks = walks
+                if success == True:
+                    break
             neg_text = ""
             neg_mask = torch.tensor(0.0)
             if success:
-                neg_text = create_text_from_graph(new_walks,all_objects_dict)
+                neg_text = create_text_from_graph(new_walks,new_all_objects_dict)
                 neg_mask = torch.tensor(1.0)
 
         
@@ -368,6 +480,15 @@ def get_vg_loader(dataset, args, vg_batch_size):
         num_workers=args.workers,
         pin_memory=True,
         sampler=sampler
+    )
+    return dataloader
+
+def get_vg_val_loader(dataset, args, vg_batch_size):
+    dataloader = DataLoader(
+        dataset,
+        batch_size=vg_batch_size,
+        num_workers=args.workers,
+        pin_memory=True
     )
     return dataloader
 

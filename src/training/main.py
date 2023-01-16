@@ -35,7 +35,7 @@ from training.logger import setup_logging
 from training.params import parse_args
 from training.scheduler import cosine_lr
 from training.train import train_one_epoch, evaluate, evaluate_winoground, evaluate_auxiliary
-from training.vg_dataset import VgDataset, VgDatasetIterable, VgDatasetText, get_vg_loader, get_vg_loader_it
+from training.vg_dataset import VgDataset, VgDatasetIterable, VgDatasetText, get_vg_loader, get_vg_val_loader, get_vg_loader_it
 from training.vg_model import PredictionHead
 from detr.models.matcher import HungarianMatcher
 from detr.models.detr import SetCriterion
@@ -297,7 +297,7 @@ def main():
     if args.vg_data:
         vg_val_dataset = VgDatasetText(args.vg_data, "val", image_transform_vg(model_visual_size), args.prompt_tokens, args.vg_samples)
         vg_batch_size = args.vg_batch_size
-        vg_vis_dataloader = get_vg_loader(vg_val_dataset, args, vg_batch_size)
+        vg_vis_dataloader = get_vg_val_loader(vg_val_dataset, args, 16)
         vg_vis_iterator = iter(vg_vis_dataloader)
         vg_vis_batch = next(vg_vis_iterator)
         if args.train_data:

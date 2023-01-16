@@ -169,9 +169,10 @@ def train_one_epoch(model, object_head, bb_head, vgcriterion, data, vg_dataloade
                 loss_dict = vgcriterion(predictions_dict, targets)
                 weight_dict = vgcriterion.weight_dict
                 vg_losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
-            total_loss = loss(image_features, text_features[:-vg_images.shape[0],:], logit_scale) + vg_losses * args.vg_loss_lambda
             if args.negatives:
-                total_loss += neg_loss(image_features, text_features, logit_scale, neg_masks, vg_images.shape[0])
+                total_loss = loss(image_features, text_features[:-vg_images.shape[0],:], logit_scale) + vg_losses * args.vg_loss_lambda + neg_loss(image_features, text_features, logit_scale, neg_masks, vg_images.shape[0])
+            else:
+                total_loss = loss(image_features, text_features, logit_scale) + vg_losses * args.vg_loss_lambda
 
         if scaler is not None:
             scaler.scale(total_loss).backward()
@@ -329,6 +330,9 @@ def evaluate(model, data, epoch, args, tb_writer=None):
     return metrics
 
 def evaluate_winoground(model, clip_processor, epoch, args, tb_writer=None):
+    metrics = {}
+    if not is_master(args):
+        return metrics
     autocast = get_autocast(args.precision)
     model.eval()
     #if not is_master(args):
@@ -428,8 +432,12 @@ def evaluate_winoground(model, clip_processor, epoch, args, tb_writer=None):
             assert wandb is not None, 'Please install wandb.'
             for name, val in metrics.items():
                 wandb.log({f"val/{name}": val, 'epoch': epoch})
+    return metrics
 
 def evaluate_auxiliary(model,object_head,bb_head,batch,args,epoch):
+    metrics = {}
+    if not is_master(args):
+        return metrics
     autocast = get_autocast(args.precision)
     inv_trans = transforms.Compose([ transforms.Normalize(mean = [ 0., 0., 0. ],
                                                      std = [ 1/0.26862954, 1/0.26130258, 1/0.27577711 ]),
@@ -473,7 +481,7 @@ def evaluate_auxiliary(model,object_head,bb_head,batch,args,epoch):
         bb_img = draw_bounding_boxes(img,bb,labels)
         new_image = transforms.ToPILImage()(bb_img)
         new_image.save(full_image_path)
-    return
+    return metrics
 
      
 
