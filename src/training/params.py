@@ -74,6 +74,12 @@ def parse_args():
         help="number of prompt tokens",
     )
     parser.add_argument(
+        "--prompt-attention",
+        default=False,
+        action="store_true",
+        help="different projection matrices for prompts"
+    )
+    parser.add_argument(
         "--open-layers",
         type=str,
         default=None,

@@ -25,6 +25,8 @@ from torch.nn.modules.utils import _pair
 from .loralib import layers as lora_layers
 from .loralib.utils import mark_only_lora_as_trainable
 
+from .MultiheadAttentionP import MultiheadAttentionP
+
 
 class Bottleneck(nn.Module):
     expansion = 4
@@ -302,7 +304,9 @@ class ResidualAttentionBlock(nn.Module):
             scale_heads: bool = False,
             scale_attn: bool = False,
             scale_fc: bool = False,
-            lora: int = -1
+            lora: int = -1,
+            prompt_attention: bool = False,
+            num_prompts: int = 10
     ):
         super().__init__()
 
@@ -315,9 +319,15 @@ class ResidualAttentionBlock(nn.Module):
         #        scale_heads=scale_heads,
         #     )
         if lora <= 0:
-            self.attn = nn.MultiheadAttention(d_model, n_head)
+            if not prompt_attention:
+                self.attn = nn.MultiheadAttention(d_model, n_head)
+            else:
+                self.attn = MultiheadAttentionP(d_model, n_head, num_prompts=num_prompts)
         else:
-            self.attn = lora_layers.MultiheadAttention(d_model, n_head, r=lora)
+            if prompt_attention:
+                self.attn = lora_layers.MultiheadAttentionPrompts(d_model, n_head, r=lora, num_prompts=num_prompts)
+            else:
+                self.attn = lora_layers.MultiheadAttention(d_model, n_head, r=lora)
         self.ln_attn = LayerNorm(d_model) if scale_attn else nn.Identity()
 
         self.ln_2 = LayerNorm(d_model)
@@ -354,14 +364,14 @@ class ResidualAttentionBlock(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, width: int, layers: int, heads: int,  mlp_ratio: float = 4.0, act_layer: Callable = nn.GELU, lora: int = -1):
+    def __init__(self, width: int, layers: int, heads: int,  mlp_ratio: float = 4.0, act_layer: Callable = nn.GELU, lora: int = -1, prompt_attention: bool = False, num_prompts: int = 10):
         super().__init__()
         self.width = width
         self.layers = layers
         self.grad_checkpointing = False
 
         self.resblocks = nn.ModuleList([
-            ResidualAttentionBlock(width, heads, mlp_ratio, act_layer=act_layer, lora=lora)
+            ResidualAttentionBlock(width, heads, mlp_ratio, act_layer=act_layer, lora=lora, prompt_attention = prompt_attention,num_prompts=num_prompts)
             for _ in range(layers)
         ])
 
@@ -388,6 +398,7 @@ class VisualTransformer(nn.Module):
             lora: int = -1,
             image_lora: bool = False,
             prompt_tokens: int = 0,
+            prompt_attention: bool = False
     ):
         super().__init__()
         self.image_size = to_2tuple(image_size)
@@ -405,9 +416,9 @@ class VisualTransformer(nn.Module):
         self.positional_embedding = nn.Parameter(scale * torch.randn(self.grid_size[0] * self.grid_size[1] + 1, width))
         self.ln_pre = LayerNorm(width)
         if image_lora:
-            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=lora)
+            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=lora, prompt_attention = prompt_attention,num_prompts = prompt_tokens)
         else:
-            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=-1)
+            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=-1, prompt_attention = prompt_attention,num_prompts = prompt_tokens)
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
@@ -487,7 +498,8 @@ class CLIP(nn.Module):
             lora: int = -1,
             image_lora: bool = False,
             text_lora: bool = False,
-            prompt_tokens: int = 0
+            prompt_tokens: int = 0,
+            prompt_attention: bool = False
     ):
         super().__init__()
         if isinstance(vision_cfg, dict):
@@ -534,7 +546,8 @@ class CLIP(nn.Module):
                 act_layer=act_layer,
                 lora=lora,
                 image_lora = image_lora,
-                prompt_tokens=prompt_tokens
+                prompt_tokens=prompt_tokens,
+                prompt_attention = prompt_attention
             )
 
         self.transformer = Transformer(
@@ -649,7 +662,7 @@ def convert_weights_to_fp16(model: nn.Module):
     model.apply(_convert_weights_to_fp16)
 
 
-def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_lora: bool = False, text_lora: bool = False, prompt_tokens: int = 0):
+def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_lora: bool = False, text_lora: bool = False, prompt_tokens: int = 0, prompt_attention: bool = False):
     vit = "visual.proj" in state_dict
 
     if vit:
@@ -697,8 +710,8 @@ def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_l
         lora=lora,
         image_lora = image_lora,
         text_lora = text_lora,
-
-        prompt_tokens=prompt_tokens
+        prompt_tokens=prompt_tokens,
+        prompt_attention = prompt_attention
     )
 
     for key in ["input_resolution", "context_length", "vocab_size"]:

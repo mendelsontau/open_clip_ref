@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from torch import optim
 from torch.cuda.amp import GradScaler
+import json
 
 try:
     import wandb
@@ -138,6 +139,7 @@ def main():
         args.image_lora,
         args.text_lora,
         args.prompt_tokens,
+        args.prompt_attention,
         precision=args.precision,
         device=device,
         jit=args.torchscript,
@@ -168,6 +170,13 @@ def main():
         mark_only_lora_as_trainable(model)
         if args.prompt_tokens > 0:
             model.visual.prompts.requires_grad_()
+        if args.prompt_attention:
+            for res_block in model.visual.transformer.resblocks:
+                res_block.attn.in_prompts_proj_weight.requires_grad_()
+                res_block.attn.in_prompts_proj_bias.requires_grad_()
+                for param in res_block.attn.out_prompts_proj.parameters():
+                    param.requires_grad_()
+
         if args.open_layers != None:
             layers_to_open = args.open_layers.split(",")
             for layer in layers_to_open:
@@ -189,6 +198,12 @@ def main():
                 param.requires_grad_()
         if args.prompt_tokens > 0:
             model.visual.prompts.requires_grad_()
+        if args.prompt_attention:
+            for res_block in model.visual.transformer.resblocks:
+                res_block.attn.in_prompts_proj_weight.requires_grad_()
+                res_block.attn.in_prompts_proj_bias.requires_grad_()
+                for param in res_block.attn.out_prompts_proj.parameters():
+                    param.requires_grad_()
         if args.open_layers != None:
             layers_to_open = args.open_layers.split(",")
             for layer in layers_to_open:
@@ -349,19 +364,39 @@ def main():
             wandb.watch(model, log='all')
         wandb.save(params_file)
         logging.debug('Finished loading wandb.')
-
+    
     if 'train' not in data:
         evaluate(model, data, start_epoch, args, writer)
         if args.vlchecklist_frequency > 0:
+            vlcl_summary = {"relation": {"samples": 0, "sum": 0.0} , "object":{"samples": 0, "sum": 0.0}, "attribute": {"samples": 0, "sum": 0.0}}
             vl_model = OPEN_CLIP(f'epoch {start_epoch}',model, preprocess_val)
             vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip1.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
-            vl_eval.start()
+            vl_dict = vl_eval.start()
+            for cat in vlcl_summary:
+                vlcl_summary[cat]["sum"] += vl_dict[cat]["sum"]
+                vlcl_summary[cat]["samples"] += vl_dict[cat]["samples"]
             vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip2.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
-            vl_eval.start()
+            vl_dict = vl_eval.start()
+            for cat in vlcl_summary:
+                vlcl_summary[cat]["sum"] += vl_dict[cat]["sum"]
+                vlcl_summary[cat]["samples"] += vl_dict[cat]["samples"]
             vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip3.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
-            vl_eval.start()
+            vl_dict = vl_eval.start()
+            for cat in vlcl_summary:
+                vlcl_summary[cat]["sum"] += vl_dict[cat]["sum"]
+                vlcl_summary[cat]["samples"] += vl_dict[cat]["samples"]
             vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip4.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
-            vl_eval.start()
+            vl_dict = vl_eval.start()
+            for cat in vlcl_summary:
+                vlcl_summary[cat]["sum"] += vl_dict[cat]["sum"]
+                vlcl_summary[cat]["samples"] += vl_dict[cat]["samples"]
+            vlcl = {"relation": vlcl_summary["relation"]["sum"]/vlcl_summary["relation"]["samples"],
+            "attribute": vlcl_summary["attribute"]["sum"]/vlcl_summary["attribute"]["samples"],
+            "object": vlcl_summary["object"]["sum"]/vlcl_summary["object"]["samples"]
+            }
+            with open(os.path.join(os.path.join(args.logs, args.name), "vl-checklist", 'itc', f'summary_{start_epoch}.json'), 'w',
+                        encoding='utf-8') as f:
+                json.dump(vlcl, f)           
         if args.winoground_frequency > 0:
             evaluate_winoground(model, preprocess_val, start_epoch, args, writer)
             if args.vg_data and args.vg_loss_lambda > 0.0:
@@ -378,15 +413,35 @@ def main():
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):
             evaluate(model, data, completed_epoch, args, writer)
             if args.vlchecklist_frequency > 0 and completed_epoch % args.vlchecklist_frequency == 0:
-                vl_model = OPEN_CLIP(f'epoch {start_epoch}',model, preprocess_val)
+                vlcl_summary = {"relation": {"samples": 0, "sum": 0.0} , "object":{"samples": 0, "sum": 0.0}, "attribute": {"samples": 0, "sum": 0.0}}
+                vl_model = OPEN_CLIP(f'epoch {completed_epoch}',model, preprocess_val)
                 vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip1.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
-                vl_eval.start()
+                vl_dict = vl_eval.start()
+                for cat in vlcl_summary:
+                    vlcl_summary[cat]["sum"] += vl_dict[cat]["sum"]
+                    vlcl_summary[cat]["samples"] += vl_dict[cat]["samples"]
                 vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip2.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
-                vl_eval.start()
+                vl_dict = vl_eval.start()
+                for cat in vlcl_summary:
+                    vlcl_summary[cat]["sum"] += vl_dict[cat]["sum"]
+                    vlcl_summary[cat]["samples"] += vl_dict[cat]["samples"]
                 vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip3.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
-                vl_eval.start()
+                vl_dict = vl_eval.start()
+                for cat in vlcl_summary:
+                    vlcl_summary[cat]["sum"] += vl_dict[cat]["sum"]
+                    vlcl_summary[cat]["samples"] += vl_dict[cat]["samples"]
                 vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip4.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
-                vl_eval.start()
+                vl_dict = vl_eval.start()
+                for cat in vlcl_summary:
+                    vlcl_summary[cat]["sum"] += vl_dict[cat]["sum"]
+                    vlcl_summary[cat]["samples"] += vl_dict[cat]["samples"]
+                vlcl = {"relation": vlcl_summary["relation"]["sum"]/vlcl_summary["relation"]["samples"],
+                "attribute": vlcl_summary["attribute"]["sum"]/vlcl_summary["attribute"]["samples"],
+                "object": vlcl_summary["object"]["sum"]/vlcl_summary["object"]["samples"]
+                }
+                with open(os.path.join(os.path.join(args.logs, args.name), "vl-checklist", 'itc', f'summary_{completed_epoch}.json'), 'w',
+                            encoding='utf-8') as f:
+                    json.dump(vlcl, f)
             if args.winoground_frequency > 0 and completed_epoch % args.winoground_frequency == 0:
                 evaluate_winoground(model, preprocess_val, completed_epoch, args, writer)
                 if args.vg_data and args.vg_loss_lambda > 0.0:
