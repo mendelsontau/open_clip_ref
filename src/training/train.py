@@ -337,6 +337,19 @@ def evaluate_winoground(model, clip_processor, epoch, args, tb_writer=None):
     model.eval()
     #if not is_master(args):
     #    return metrics
+    def text_correct(result):
+        return result["c0_i0"] > result["c1_i0"] and result["c1_i1"] > result["c0_i1"]
+
+    def image_correct(result):
+        return result["c0_i0"] > result["c0_i1"] and result["c1_i1"] > result["c1_i0"]
+
+    def group_correct(result):
+        return image_correct(result) and text_correct(result)
+
+    #check if winoground folder exists
+    if not os.path.exists(os.path.join(args.logs,args.name,"winoground")):
+        os.mkdir(os.path.join(args.logs,args.name,"winoground"))
+    result_dict = {}
     auth_token = "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"
     winoground = load_dataset("facebook/winoground", use_auth_token=auth_token)["test"]
     categories_clip_scores = {}
@@ -379,17 +392,12 @@ def evaluate_winoground(model, clip_processor, epoch, args, tb_writer=None):
         if len(all_tags) == 0:
             all_tags = ["No Tag"]
         all_tags.append("All Dataset")
+        sample_dict = {"id" : example["id"], "c0_i0": clip_score_c0_i0, "c0_i1": clip_score_c0_i1, "c1_i0": clip_score_c1_i0, "c1_i1": clip_score_c1_i1}
         for tag in all_tags:
-            categories_clip_scores[tag].append({"id" : example["id"], "c0_i0": clip_score_c0_i0, "c0_i1": clip_score_c0_i1, "c1_i0": clip_score_c1_i0, "c1_i1": clip_score_c1_i1})
-    
-    def text_correct(result):
-        return result["c0_i0"] > result["c1_i0"] and result["c1_i1"] > result["c0_i1"]
-
-    def image_correct(result):
-        return result["c0_i0"] > result["c0_i1"] and result["c1_i1"] > result["c1_i0"]
-
-    def group_correct(result):
-        return image_correct(result) and text_correct(result)
+            categories_clip_scores[tag].append(sample_dict)
+        
+        sample_result_dict = {"text": True if text_correct(sample_dict) else False, "image": True if image_correct(sample_dict) else False, "group": True if group_correct(sample_dict) else False}
+        result_dict[example_id] = sample_result_dict
 
     for category in categories_clip_scores:
         category_clip_scores = categories_clip_scores[category]
@@ -432,6 +440,10 @@ def evaluate_winoground(model, clip_processor, epoch, args, tb_writer=None):
             assert wandb is not None, 'Please install wandb.'
             for name, val in metrics.items():
                 wandb.log({f"val/{name}": val, 'epoch': epoch})
+    result_dict_path = os.path.join(args.logs,args.name,"winoground","results_" + str(epoch) + ".json")
+    out_file = open(result_dict_path, "w") 
+    json.dump(result_dict, out_file, indent = 6)
+    out_file.close()
     return metrics
 
 def evaluate_auxiliary(model,object_head,bb_head,batch,args,epoch):

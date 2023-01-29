@@ -263,7 +263,7 @@ class VgDataset(Dataset):
 class VgDatasetText(Dataset):
     def __init__(self, vg_path, split, transforms, num_objects, num_samples, negatives = False):
         logging.debug(f'Loading data from visual genome.')
-        f = open(os.path.join(vg_path,"vg_100k_" + split +  ".json"))
+        f = open(os.path.join(vg_path,"vg_150k_" + split +  ".json"))
         self.data = json.load(f)
         f = open(os.path.join(vg_path,"relations_annotations.json"))
         self.relations_annotations = json.load(f)

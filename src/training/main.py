@@ -37,7 +37,7 @@ from training.params import parse_args
 from training.scheduler import cosine_lr
 from training.train import train_one_epoch, evaluate, evaluate_winoground, evaluate_auxiliary
 from training.vg_dataset import VgDataset, VgDatasetIterable, VgDatasetText, get_vg_loader, get_vg_val_loader, get_vg_loader_it
-from training.vg_model import PredictionHead
+from training.vg_model import PredictionHead, MLP
 from detr.models.matcher import HungarianMatcher
 from detr.models.detr import SetCriterion
 
