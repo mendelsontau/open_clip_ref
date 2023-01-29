@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import numpy as np
 
 try:
     import torch.distributed.nn
@@ -139,7 +140,7 @@ class HNLoss(nn.Module):
         negative_similarity = torch.exp(negative_similarity)
         denominator = positive_similarity + negative_similarity
         loss_per_sample = -torch.log(torch.div(positive_similarity,denominator))
-        loss = self.alpha * torch.dot(loss_per_sample, ignore_mask)/vg_batch_size
+        loss = self.alpha * torch.dot(loss_per_sample, ignore_mask)/torch.sum(ignore_mask)
         return loss
 
 

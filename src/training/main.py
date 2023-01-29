@@ -47,7 +47,7 @@ from VL_CheckList.vl_checklist.evaluate import Evaluate
 
 def random_seed(seed=42, rank=0):
     torch.manual_seed(seed + rank)
-    np.random.seed(seed + rank)
+    np.random.seed(seed + rank) 
     random.seed(seed + rank)
 
 
@@ -140,6 +140,8 @@ def main():
         args.text_lora,
         args.prompt_tokens,
         args.prompt_attention,
+        args.prompt_attention_full,
+        args.mask_attention,
         precision=args.precision,
         device=device,
         jit=args.torchscript,
@@ -176,6 +178,13 @@ def main():
                 res_block.attn.in_prompts_proj_bias.requires_grad_()
                 for param in res_block.attn.out_prompts_proj.parameters():
                     param.requires_grad_()
+                if args.prompt_attention_full:
+                    for param in res_block.ln_1_prompt.parameters():
+                        param.requires_grad_()
+                    for param in res_block.ln_2_prompt.parameters():
+                        param.requires_grad_()
+                    for param in res_block.mlp_prompt.parameters():
+                        param.requires_grad_()
 
         if args.open_layers != None:
             layers_to_open = args.open_layers.split(",")
@@ -204,6 +213,13 @@ def main():
                 res_block.attn.in_prompts_proj_bias.requires_grad_()
                 for param in res_block.attn.out_prompts_proj.parameters():
                     param.requires_grad_()
+                if args.prompt_attention_full:
+                    for param in res_block.ln_1_prompt.parameters():
+                        param.requires_grad_()
+                    for param in res_block.ln_2_prompt.parameters():
+                        param.requires_grad_()
+                    for param in res_block.mlp_prompt.parameters():
+                        param.requires_grad_()
         if args.open_layers != None:
             layers_to_open = args.open_layers.split(",")
             for layer in layers_to_open:

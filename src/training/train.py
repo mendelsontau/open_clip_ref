@@ -131,7 +131,7 @@ def train_one_epoch(model, object_head, bb_head, vgcriterion, data, vg_dataloade
                 vg_iter = iter(vg_dataloader)
                 vg_batch = next(vg_iter)
             if args.negatives:
-                vg_images, vg_texts, valid_objects, vg_bbs, vg_object_descriptions, neg_texts, neg_masks = vg_batch 
+                vg_images, vg_texts, valid_objects, vg_bbs, vg_object_descriptions, neg_texts, neg_masks = vg_batch
                 neg_masks = neg_masks.to(device=device, non_blocking=True)
                 texts = torch.cat([texts, vg_texts, neg_texts])
             else:

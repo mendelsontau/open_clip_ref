@@ -80,6 +80,18 @@ def parse_args():
         help="different projection matrices for prompts"
     )
     parser.add_argument(
+        "--prompt-attention-full",
+        default=False,
+        action="store_true",
+        help="different sequence for prompts"
+    )
+    parser.add_argument(
+        "--mask-attention",
+        type=int,
+        default = -1,
+        help="mask attention for object tokens in some layers"
+    )
+    parser.add_argument(
         "--open-layers",
         type=str,
         default=None,

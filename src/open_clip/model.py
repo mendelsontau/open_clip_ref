@@ -306,10 +306,15 @@ class ResidualAttentionBlock(nn.Module):
             scale_fc: bool = False,
             lora: int = -1,
             prompt_attention: bool = False,
-            num_prompts: int = 10
+            num_prompts: int = 10,
+            prompt_attention_full: bool = False,
+            mask_attention: bool = False
     ):
         super().__init__()
-
+        self.num_prompts = num_prompts
+        self.prompt_attention_full = prompt_attention_full
+        if prompt_attention_full:
+            self.ln_1_prompt = LayerNorm(d_model)
         self.ln_1 = LayerNorm(d_model)
         # FIXME torchscript issues need to be resolved for custom attention
         # if scale_cosine_attn or scale_heads:
@@ -318,6 +323,15 @@ class ResidualAttentionBlock(nn.Module):
         #        scaled_cosine=scale_cosine_attn,
         #        scale_heads=scale_heads,
         #     )
+        self.mask_attention = mask_attention
+        if mask_attention:
+            self.mask = []
+            self.mask.append([False] + [True for i in range (num_prompts)] + [False for i in range(49)])
+            for i in range(num_prompts):
+                self.mask.append([False for i in range(60)])
+            for i in range(49):
+                self.mask.append([False] + [True for i in range (num_prompts)] + [False for i in range(49)])
+            self.mask = torch.BoolTensor(self.mask)
         if lora <= 0:
             if not prompt_attention:
                 self.attn = nn.MultiheadAttention(d_model, n_head)
@@ -328,12 +342,23 @@ class ResidualAttentionBlock(nn.Module):
                 self.attn = lora_layers.MultiheadAttentionPrompts(d_model, n_head, r=lora, num_prompts=num_prompts)
             else:
                 self.attn = lora_layers.MultiheadAttention(d_model, n_head, r=lora)
+        if prompt_attention_full:
+            self.ln_attn_prompt = LayerNorm(d_model) if scale_attn else nn.Identity()
         self.ln_attn = LayerNorm(d_model) if scale_attn else nn.Identity()
 
+        if prompt_attention_full:
+            self.ln_2_prompt = LayerNorm(d_model)
         self.ln_2 = LayerNorm(d_model)
         mlp_width = int(d_model * mlp_ratio)
         if lora <= 0 :
             self.mlp = nn.Sequential(OrderedDict([
+                ("c_fc", nn.Linear(d_model, mlp_width)),
+                ('ln', LayerNorm(mlp_width) if scale_fc else nn.Identity()),
+                ("gelu", act_layer()),
+                ("c_proj", nn.Linear(mlp_width, d_model))
+            ]))
+            if self.prompt_attention_full:
+                self.mlp_prompt = nn.Sequential(OrderedDict([
                 ("c_fc", nn.Linear(d_model, mlp_width)),
                 ('ln', LayerNorm(mlp_width) if scale_fc else nn.Identity()),
                 ("gelu", act_layer()),
@@ -346,10 +371,21 @@ class ResidualAttentionBlock(nn.Module):
                 ("gelu", act_layer()),
                 ("c_proj", lora_layers.Linear(mlp_width, d_model, r=lora))
             ]))
+            if self.prompt_attention_full:
+                self.mlp_prompt = nn.Sequential(OrderedDict([
+                ("c_fc", nn.Linear(d_model, mlp_width)),
+                ('ln', LayerNorm(mlp_width) if scale_fc else nn.Identity()),
+                ("gelu", act_layer()),
+                ("c_proj", nn.Linear(mlp_width, d_model))
+            ]))
             
 
     def attention(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None):
-        return self.attn(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
+        if self.mask_attention:
+            mask = self.mask.to(device=x.get_device())
+            return self.attn(x, x, x, need_weights=False, attn_mask=mask)[0]
+        else:
+            return self.attn(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
         # FIXME torchscript issues need resolving for custom attention option to work
         # if self.use_torch_attn:
         #     return self.attn(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
@@ -357,23 +393,53 @@ class ResidualAttentionBlock(nn.Module):
         #     return self.attn(x, attn_mask=attn_mask)
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None):
-        x = x + self.ln_attn(self.attention(self.ln_1(x), attn_mask=attn_mask))
-        x = x + self.mlp(self.ln_2(x))
+        if not self.prompt_attention_full:
+            x = x + self.ln_attn(self.attention(self.ln_1(x), attn_mask=attn_mask))
+            x = x + self.mlp(self.ln_2(x))
+        else:
+            x_cls_patch = torch.cat([x[0,:,:].unsqueeze(dim=0),x[self.num_prompts+1:,:,:]])
+            x_cls_patch = self.ln_1(x_cls_patch)
+            x_prompts = self.ln_1_prompt(x[1:self.num_prompts + 1,:,:])
+            x_new = torch.cat([x_cls_patch[0,:,:].unsqueeze(dim=0),x_prompts,x_cls_patch[1:,:,:]])
+            x_new = self.attention(x_new, attn_mask=attn_mask)
+            x_cls_patch = torch.cat([x_new[0,:,:].unsqueeze(dim=0),x_new[self.num_prompts+1:,:,:]])
+            x_cls_patch = self.ln_attn(x_cls_patch)
+            x_prompts = self.ln_attn_prompt(x_new[1:self.num_prompts + 1,:,:])
+            x_new = torch.cat([x_cls_patch[0,:,:].unsqueeze(dim=0),x_prompts,x_cls_patch[1:,:,:]])
+            x = x + x_new
+            x_cls_patch = torch.cat([x[0,:,:].unsqueeze(dim=0),x[self.num_prompts+1:,:,:]])
+            x_cls_patch = self.ln_2(x_cls_patch)
+            x_cls_patch = self.mlp(x_cls_patch)
+            x_prompts = self.mlp_prompt(self.ln_2_prompt(x[1:self.num_prompts + 1,:,:]))
+            x_new = torch.cat([x_cls_patch[0,:,:].unsqueeze(dim=0),x_prompts,x_cls_patch[1:,:,:]])
+            x = x + x_new
+
         return x
 
 
 
 class Transformer(nn.Module):
-    def __init__(self, width: int, layers: int, heads: int,  mlp_ratio: float = 4.0, act_layer: Callable = nn.GELU, lora: int = -1, prompt_attention: bool = False, num_prompts: int = 10):
+    def __init__(self, width: int, layers: int, heads: int,  mlp_ratio: float = 4.0, act_layer: Callable = nn.GELU, lora: int = -1, prompt_attention: bool = False, num_prompts: int = 10, prompt_attention_full: bool = False,mask_attention: int = -1):
         super().__init__()
         self.width = width
         self.layers = layers
         self.grad_checkpointing = False
 
-        self.resblocks = nn.ModuleList([
-            ResidualAttentionBlock(width, heads, mlp_ratio, act_layer=act_layer, lora=lora, prompt_attention = prompt_attention,num_prompts=num_prompts)
-            for _ in range(layers)
-        ])
+        if mask_attention == -1:
+            mask_list = [False for i in range(layers)]
+        else:
+            mask_list = [True for i in range(mask_attention)] + [False for l in range(layers - mask_attention)]
+            mask_list.reverse()
+
+
+        resblocks_list = []
+        for t in range(layers):
+            resblocks_list.append(ResidualAttentionBlock(width, heads, mlp_ratio, act_layer=act_layer, lora=lora, prompt_attention = prompt_attention,num_prompts=num_prompts, prompt_attention_full=prompt_attention_full,mask_attention=mask_list[t]))
+        self.resblocks = nn.ModuleList(resblocks_list)
+        #self.resblocks = nn.ModuleList([
+        #    ResidualAttentionBlock(width, heads, mlp_ratio, act_layer=act_layer, lora=lora, prompt_attention = prompt_attention,num_prompts=num_prompts, prompt_attention_full=prompt_attention_full)
+        #    for _ in range(layers)
+        #])
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None):
         for r in self.resblocks:
@@ -398,7 +464,9 @@ class VisualTransformer(nn.Module):
             lora: int = -1,
             image_lora: bool = False,
             prompt_tokens: int = 0,
-            prompt_attention: bool = False
+            prompt_attention: bool = False,
+            prompt_attention_full: bool = False,
+            mask_attention: int = -1
     ):
         super().__init__()
         self.image_size = to_2tuple(image_size)
@@ -416,9 +484,9 @@ class VisualTransformer(nn.Module):
         self.positional_embedding = nn.Parameter(scale * torch.randn(self.grid_size[0] * self.grid_size[1] + 1, width))
         self.ln_pre = LayerNorm(width)
         if image_lora:
-            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=lora, prompt_attention = prompt_attention,num_prompts = prompt_tokens)
+            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=lora, prompt_attention = prompt_attention,num_prompts = prompt_tokens, prompt_attention_full=prompt_attention_full,mask_attention=mask_attention)
         else:
-            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=-1, prompt_attention = prompt_attention,num_prompts = prompt_tokens)
+            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=-1, prompt_attention = prompt_attention,num_prompts = prompt_tokens,prompt_attention_full=prompt_attention_full,mask_attention=mask_attention)
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
@@ -499,7 +567,9 @@ class CLIP(nn.Module):
             image_lora: bool = False,
             text_lora: bool = False,
             prompt_tokens: int = 0,
-            prompt_attention: bool = False
+            prompt_attention: bool = False,
+            prompt_attention_full: bool = False,
+            mask_attention: int = -1
     ):
         super().__init__()
         if isinstance(vision_cfg, dict):
@@ -547,7 +617,9 @@ class CLIP(nn.Module):
                 lora=lora,
                 image_lora = image_lora,
                 prompt_tokens=prompt_tokens,
-                prompt_attention = prompt_attention
+                prompt_attention = prompt_attention,
+                prompt_attention_full = prompt_attention_full,
+                mask_attention=mask_attention
             )
 
         self.transformer = Transformer(
@@ -662,7 +734,7 @@ def convert_weights_to_fp16(model: nn.Module):
     model.apply(_convert_weights_to_fp16)
 
 
-def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_lora: bool = False, text_lora: bool = False, prompt_tokens: int = 0, prompt_attention: bool = False):
+def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_lora: bool = False, text_lora: bool = False, prompt_tokens: int = 0, prompt_attention: bool = False, prompt_attention_full: bool = False, mask_attention: int = -1):
     vit = "visual.proj" in state_dict
 
     if vit:
@@ -711,7 +783,9 @@ def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_l
         image_lora = image_lora,
         text_lora = text_lora,
         prompt_tokens=prompt_tokens,
-        prompt_attention = prompt_attention
+        prompt_attention = prompt_attention,
+        prompt_attention_full = prompt_attention_full,
+        mask_attention=mask_attention
     )
 
     for key in ["input_resolution", "context_length", "vocab_size"]:
