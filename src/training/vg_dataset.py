@@ -144,7 +144,7 @@ def apply_negative_type_1(walks, relations_annotations):
             break
     return success, walks
 
-def apply_negative_type_2(walks, relations_annotations):
+def apply_negative_type_2(walks, relations_annotations,states,actions):
     #find all relationships in the graph
     all_relations = []
     for w in range(len(walks)):
@@ -162,11 +162,35 @@ def apply_negative_type_2(walks, relations_annotations):
         rel_r = rand_rel[2]
         predicate = rel["predicate"]
         if predicate in relations_annotations:
+            if relations_annotations[predicate]["action"] == "no" and relations_annotations[predicate]["state"] == "no" and relations_annotations[predicate]["negations"] == "":
+                continue
+            negations1 = []
+            negations2 = []
+            if relations_annotations[predicate]["action"] == "yes":
+                negations1 += actions
+            if relations_annotations[predicate]["state"] == "yes":
+                negations1 += states
             if relations_annotations[predicate]["negations"] != "" :
-                negations = relations_annotations[predicate]["negations"].split(",")
-                new_predicate = random.choice(negations)
+                negations2 = relations_annotations[predicate]["negations"].split(",")
+            if len(negations1) == 0:
+                new_predicate = random.choice(negations2)
                 success = True
                 walks[rel_w][rel_r]["predicate"] = new_predicate
+            elif len(negations2) == 0:
+                new_predicate = random.choice(negations1)
+                success = True
+                walks[rel_w][rel_r]["predicate"] = new_predicate
+            else:
+                rand_bit = random.randint(0,1)
+                if rand_bit == 0:
+                    new_predicate = random.choice(negations1)
+                    success = True
+                    walks[rel_w][rel_r]["predicate"] = new_predicate
+                else:
+                    new_predicate = random.choice(negations2)
+                    success = True
+                    walks[rel_w][rel_r]["predicate"] = new_predicate
+
         
         if success:
             break
@@ -265,10 +289,14 @@ class VgDatasetText(Dataset):
         logging.debug(f'Loading data from visual genome.')
         f = open(os.path.join(vg_path,"vg_150k_" + split +  ".json"))
         self.data = json.load(f)
-        f = open(os.path.join(vg_path,"relations_annotations.json"))
+        f = open(os.path.join(vg_path,"relations_annotations_new.json"))
         self.relations_annotations = json.load(f)
         f = open(os.path.join(vg_path,"attributes_annotations.json"))
         self.attributes_annotations = json.load(f)
+        f = open(os.path.join(vg_path,"states.json"))
+        self.states = json.load(f)
+        f = open(os.path.join(vg_path,"actions.json"))
+        self.actions = json.load(f)
         self.vg_path = vg_path
         self.clip_image_size = 224
         self.transforms = transforms
@@ -322,7 +350,7 @@ class VgDatasetText(Dataset):
                     success, new_walks = apply_negative_type_1(copy.deepcopy(walks), self.relations_annotations)
                     new_all_objects_dict = all_objects_dict
                 if negative_type == 1:
-                    success, new_walks = apply_negative_type_2(copy.deepcopy(walks), self.relations_annotations)
+                    success, new_walks = apply_negative_type_2(copy.deepcopy(walks), self.relations_annotations,self.states,self.actions)
                     new_all_objects_dict = all_objects_dict
                 if negative_type == 2:
                     success, new_all_objects_dict = apply_negative_type_3(copy.deepcopy(objects), copy.deepcopy(all_objects_dict), self.attributes_annotations)
