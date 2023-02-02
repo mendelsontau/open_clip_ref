@@ -159,8 +159,9 @@ def main():
     #vg prediction heads
     object_head = PredictionHead(768,512).to(args.device)
     bb_head = PredictionHead(768,4).to(args.device)
-    relation_head = PredictionHead(768,512).to(args.device)
-    relation_bb_head = PredictionHead(768,4).to(args.device)
+    if args.relation_tokens > 0:
+        relation_head = PredictionHead(768,512).to(args.device)
+        relation_bb_head = PredictionHead(768,4).to(args.device)
 
 
     if args.trace:
@@ -260,8 +261,9 @@ def main():
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], **ddp_args, find_unused_parameters=True)
         object_head = torch.nn.parallel.DistributedDataParallel(object_head, device_ids=[device], **ddp_args)
         bb_head = torch.nn.parallel.DistributedDataParallel(bb_head, device_ids=[device], **ddp_args)
-        relation_head = torch.nn.parallel.DistributedDataParallel(relation_head, device_ids=[device], **ddp_args)
-        relation_bb_head = torch.nn.parallel.DistributedDataParallel(relation_bb_head, device_ids=[device], **ddp_args)
+        if args.relation_tokens > 0:
+            relation_head = torch.nn.parallel.DistributedDataParallel(relation_head, device_ids=[device], **ddp_args)
+            relation_bb_head = torch.nn.parallel.DistributedDataParallel(relation_bb_head, device_ids=[device], **ddp_args)
 
 
     # create optimizer and scaler
@@ -330,14 +332,15 @@ def main():
                 if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
                     sd = {k[len('module.'):]: v for k, v in sd.items()}
                 bb_head.load_state_dict(sd)
-                sd = checkpoint["relation_state_dict"]
-                if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
-                    sd = {k[len('module.'):]: v for k, v in sd.items()}
-                relation_head.load_state_dict(sd)
-                sd = checkpoint["relation_bb_state_dict"]
-                if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
-                    sd = {k[len('module.'):]: v for k, v in sd.items()}
-                relation_bb_head.load_state_dict(sd)
+                if args.relation_tokens > 0:
+                    sd = checkpoint["relation_state_dict"]
+                    if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                        sd = {k[len('module.'):]: v for k, v in sd.items()}
+                    relation_head.load_state_dict(sd)
+                    sd = checkpoint["relation_bb_state_dict"]
+                    if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                        sd = {k[len('module.'):]: v for k, v in sd.items()}
+                    relation_bb_head.load_state_dict(sd)
                 if optimizer is not None:
                     optimizer.load_state_dict(checkpoint["optimizer"])
                 if scaler is not None and 'scaler' in checkpoint:
@@ -356,7 +359,7 @@ def main():
 
     #vg data
     if args.vg_data:
-        vg_val_dataset = VgDatasetText(args.vg_data, "val", image_transform_vg(model_visual_size), args.prompt_tokens, args.vg_samples)
+        vg_val_dataset = VgDatasetText(args.vg_data, "val", image_transform_vg(model_visual_size), args.prompt_tokens, args.relation_tokens, args.vg_samples)
         vg_batch_size = args.vg_batch_size
         vg_vis_dataloader = get_vg_val_loader(vg_val_dataset, args, 16)
         vg_vis_iterator = iter(vg_vis_dataloader)
@@ -364,17 +367,33 @@ def main():
         if args.train_data:
             vg_train_dataset = VgDatasetText(args.vg_data, "train", image_transform_vg(model_visual_size), args.prompt_tokens, args.vg_samples, args.negatives)
             vg_dataloader = get_vg_loader(vg_train_dataset, args, vg_batch_size)
-            matcher = HungarianMatcher() 
-            weight_dict = {'loss_ce': 1, 'loss_bbox': 5}
-            weight_dict['loss_giou'] = 2
-            losses = ['labels','boxes','cardinality']
+            if args.vg_loss_lambda > 0.0:
+                matcher = HungarianMatcher() 
+                weight_dict = {'loss_ce': 1, 'loss_bbox': 5}
+                weight_dict['loss_giou'] = 2
+                losses = ['labels','boxes','cardinality']
 
-            vgcriterion = SetCriterion(vg_batch_size*args.prompt_tokens, matcher=matcher, weight_dict=weight_dict,
+                vgcriterion = SetCriterion(vg_batch_size*args.prompt_tokens, matcher=matcher, weight_dict=weight_dict,
                              eos_coef=0.1, losses=losses)
-            vgcriterion.to(args.device)
+                vgcriterion.to(args.device)
+            else:
+                vgcriterion = None
+            if args.relation_tokens > 0:
+                relation_matcher = HungarianMatcher() 
+                weight_dict = {'loss_ce': 1, 'loss_bbox': 5}
+                weight_dict['loss_giou'] = 2
+                losses = ['labels','boxes','cardinality']
+
+                relationcriterion = SetCriterion(vg_batch_size*args.relation_tokens, matcher=relation_matcher, weight_dict=weight_dict,
+                             eos_coef=0.1, losses=losses)
+                relationcriterion.to(args.device)
+            else:
+                relationcriterion = None
+
     else:
         vgcriterion = None
         vg_dataloader = None
+        relationcriterion = None
 
     
 
@@ -453,7 +472,7 @@ def main():
         if is_master(args):
             logging.info(f'Start epoch {epoch}')
 
-        train_one_epoch(model, object_head, bb_head, vgcriterion, data, vg_dataloader, epoch, optimizer, scaler, scheduler, args, writer)
+        train_one_epoch(model, object_head, bb_head, relation_head, relation_bb_head, vgcriterion, relationcriterion, data, vg_dataloader, epoch, optimizer, scaler, scheduler, args, writer)
         completed_epoch = epoch + 1
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):

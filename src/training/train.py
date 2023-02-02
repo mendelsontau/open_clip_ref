@@ -92,13 +92,17 @@ def organize_batch_classes(object_descriptions, valid_objects, vg_bbs, args, dev
 
 
 
-def train_one_epoch(model, object_head, bb_head, vgcriterion, data, vg_dataloader, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
+def train_one_epoch(model, object_head, bb_head, relation_head, relation_bb_head, vgcriterion, relationcriterion, data, vg_dataloader, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
     device = torch.device(args.device)
     autocast = get_autocast(args.precision)
 
     model.train()
-    object_head.train()
-    bb_head.train()
+    if args.vg_loss_lambda > 0.0:
+        object_head.train()
+        bb_head.train()
+    if args.relation_tokens > 0:
+        relation_head.train()
+        relation_bb_head.train()
     loss = ClipLoss(
         local_loss=args.local_loss,
         gather_with_grad=args.gather_with_grad,
