@@ -159,6 +159,8 @@ def main():
     #vg prediction heads
     object_head = PredictionHead(768,512).to(args.device)
     bb_head = PredictionHead(768,4).to(args.device)
+    relation_head = PredictionHead(768,512).to(args.device)
+    relation_bb_head = PredictionHead(768,4).to(args.device)
 
 
     if args.trace:
@@ -258,6 +260,8 @@ def main():
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], **ddp_args, find_unused_parameters=True)
         object_head = torch.nn.parallel.DistributedDataParallel(object_head, device_ids=[device], **ddp_args)
         bb_head = torch.nn.parallel.DistributedDataParallel(bb_head, device_ids=[device], **ddp_args)
+        relation_head = torch.nn.parallel.DistributedDataParallel(relation_head, device_ids=[device], **ddp_args)
+        relation_bb_head = torch.nn.parallel.DistributedDataParallel(relation_bb_head, device_ids=[device], **ddp_args)
 
 
     # create optimizer and scaler
@@ -326,6 +330,14 @@ def main():
                 if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
                     sd = {k[len('module.'):]: v for k, v in sd.items()}
                 bb_head.load_state_dict(sd)
+                sd = checkpoint["relation_state_dict"]
+                if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                    sd = {k[len('module.'):]: v for k, v in sd.items()}
+                relation_head.load_state_dict(sd)
+                sd = checkpoint["relation_bb_state_dict"]
+                if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                    sd = {k[len('module.'):]: v for k, v in sd.items()}
+                relation_bb_head.load_state_dict(sd)
                 if optimizer is not None:
                     optimizer.load_state_dict(checkpoint["optimizer"])
                 if scaler is not None and 'scaler' in checkpoint:
