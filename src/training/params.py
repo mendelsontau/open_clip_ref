@@ -224,6 +224,12 @@ def parse_args():
         help="path to latest checkpoint (default: none)",
     )
     parser.add_argument(
+        "--pretrain-detr",
+        default=None,
+        type=str,
+        help="path to a pretrained clip + detr",
+    )
+    parser.add_argument(
         "--precision",
         choices=["amp", "amp_bfloat16", "fp16", "fp32"],
         default="amp",

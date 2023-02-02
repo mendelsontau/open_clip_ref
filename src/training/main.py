@@ -288,6 +288,23 @@ def main():
 
         scaler = GradScaler() if args.precision == "amp" else None
 
+    if args.pretrain_detr is not None:
+        if os.path.isfile(args.pretrain_detr):
+            checkpoint = torch.load(args.pretrain_detr, map_location='cpu')
+            sd = checkpoint["state_dict"]
+            if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                sd = {k[len('module.'):]: v for k, v in sd.items()}
+            model.load_state_dict(sd, strict=False)
+            sd = checkpoint["object_state_dict"]
+            if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                sd = {k[len('module.'):]: v for k, v in sd.items()}
+            object_head.load_state_dict(sd)
+            sd = checkpoint["bb_state_dict"]
+            if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                sd = {k[len('module.'):]: v for k, v in sd.items()}
+            bb_head.load_state_dict(sd)
+
+
     # optionally resume from a checkpoint
     start_epoch = 0
     if args.resume is not None:
