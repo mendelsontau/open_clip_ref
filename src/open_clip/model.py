@@ -419,7 +419,7 @@ class ResidualAttentionBlock(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, width: int, layers: int, heads: int,  mlp_ratio: float = 4.0, act_layer: Callable = nn.GELU, lora: int = -1, prompt_attention: bool = False, num_prompts: int = 10, prompt_attention_full: bool = False,mask_attention: int = -1):
+    def __init__(self, width: int, layers: int, heads: int,  mlp_ratio: float = 4.0, act_layer: Callable = nn.GELU, lora: int = -1, prompt_attention: bool = False, num_prompts: int = 0, prompt_attention_full: bool = False,mask_attention: int = -1):
         super().__init__()
         self.width = width
         self.layers = layers
