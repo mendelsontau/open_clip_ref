@@ -138,6 +138,7 @@ def main():
         args.lora,
         args.image_lora,
         args.text_lora,
+        args.relation_tokens,
         args.prompt_tokens,
         args.prompt_attention,
         args.prompt_attention_full,

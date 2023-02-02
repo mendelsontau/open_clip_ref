@@ -71,7 +71,13 @@ def parse_args():
         "--prompt-tokens",
         type=int,
         default=0,
-        help="number of prompt tokens",
+        help="number of object tokens",
+    )
+    parser.add_argument(
+        "--relation-tokens",
+        type=int,
+        default=0,
+        help="number of relation tokens",
     )
     parser.add_argument(
         "--prompt-attention",

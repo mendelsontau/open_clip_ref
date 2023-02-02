@@ -73,6 +73,7 @@ def create_model(
         lora: int = -1,
         image_lora: bool = False,
         text_lora: bool = False,
+        relation_tokens: int = 0,
         prompt_tokens: int = 0,
         prompt_attention: bool  = False,
         prompt_attention_full: bool = False,
@@ -87,7 +88,7 @@ def create_model(
 
     if pretrained.lower() == 'openai':
         logging.info(f'Loading pretrained {model_name} from OpenAI.')
-        model = load_openai_model(model_name, lora=lora, image_lora=image_lora, text_lora=text_lora, prompt_tokens=prompt_tokens, prompt_attention = prompt_attention, prompt_attention_full = prompt_attention_full, mask_attention = mask_attention, device=device, jit=jit, cache_dir=cache_dir)
+        model = load_openai_model(model_name, lora=lora, image_lora=image_lora, text_lora=text_lora, relation_tokens=relation_tokens, prompt_tokens=prompt_tokens, prompt_attention = prompt_attention, prompt_attention_full = prompt_attention_full, mask_attention = mask_attention, device=device, jit=jit, cache_dir=cache_dir)
         # See https://discuss.pytorch.org/t/valueerror-attemting-to-unscale-fp16-gradients/81372
         if precision == "amp" or precision == "fp32":
             model = model.float()
@@ -152,6 +153,7 @@ def create_model_and_transforms(
         lora: int = -1,
         image_lora: bool = False,
         text_lora: bool = False,
+        relation_tokens: int = 0,
         prompt_tokens: int = 0,
         prompt_attention: bool = False,
         prompt_attention_full: bool = False,
@@ -166,7 +168,7 @@ def create_model_and_transforms(
         cache_dir: Optional[str] = None,
 ):
     model = create_model(
-        model_name, pretrained, precision, lora, image_lora, text_lora, prompt_tokens, prompt_attention, prompt_attention_full,mask_attention, device, jit,
+        model_name, pretrained, precision, lora, image_lora, text_lora, relation_tokens, prompt_tokens, prompt_attention, prompt_attention_full,mask_attention, device, jit,
         force_quick_gelu=force_quick_gelu,
         pretrained_image=pretrained_image,
         cache_dir=cache_dir)

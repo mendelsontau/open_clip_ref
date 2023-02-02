@@ -419,7 +419,7 @@ class ResidualAttentionBlock(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, width: int, layers: int, heads: int,  mlp_ratio: float = 4.0, act_layer: Callable = nn.GELU, lora: int = -1, prompt_attention: bool = False, num_prompts: int = 10, prompt_attention_full: bool = False,mask_attention: int = -1):
+    def __init__(self, width: int, layers: int, heads: int,  mlp_ratio: float = 4.0, act_layer: Callable = nn.GELU, lora: int = -1, prompt_attention: bool = False, num_prompts: int = 0, prompt_attention_full: bool = False,mask_attention: int = -1):
         super().__init__()
         self.width = width
         self.layers = layers
@@ -463,6 +463,7 @@ class VisualTransformer(nn.Module):
             act_layer: Callable = nn.GELU,
             lora: int = -1,
             image_lora: bool = False,
+            relation_tokens: int = 0,
             prompt_tokens: int = 0,
             prompt_attention: bool = False,
             prompt_attention_full: bool = False,
@@ -477,16 +478,16 @@ class VisualTransformer(nn.Module):
             self.conv1 = lora_layers.Conv2d(in_channels=3, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False, r=lora)
         else:
             self.conv1 = nn.Conv2d(in_channels=3, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False)
-        self.num_tokens = prompt_tokens
+        self.num_tokens = prompt_tokens + relation_tokens
 
         scale = width ** -0.5
         self.class_embedding = nn.Parameter(scale * torch.randn(width))
         self.positional_embedding = nn.Parameter(scale * torch.randn(self.grid_size[0] * self.grid_size[1] + 1, width))
         self.ln_pre = LayerNorm(width)
         if image_lora:
-            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=lora, prompt_attention = prompt_attention,num_prompts = prompt_tokens, prompt_attention_full=prompt_attention_full,mask_attention=mask_attention)
+            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=lora, prompt_attention = prompt_attention, num_prompts = self.num_tokens, prompt_attention_full=prompt_attention_full,mask_attention=mask_attention)
         else:
-            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=-1, prompt_attention = prompt_attention,num_prompts = prompt_tokens,prompt_attention_full=prompt_attention_full,mask_attention=mask_attention)
+            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=-1, prompt_attention = prompt_attention,num_prompts = self.num_tokens,prompt_attention_full=prompt_attention_full,mask_attention=mask_attention)
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
@@ -566,6 +567,7 @@ class CLIP(nn.Module):
             lora: int = -1,
             image_lora: bool = False,
             text_lora: bool = False,
+            relation_tokens: int = 0,
             prompt_tokens: int = 0,
             prompt_attention: bool = False,
             prompt_attention_full: bool = False,
@@ -616,6 +618,7 @@ class CLIP(nn.Module):
                 act_layer=act_layer,
                 lora=lora,
                 image_lora = image_lora,
+                relation_tokens=relation_tokens,
                 prompt_tokens=prompt_tokens,
                 prompt_attention = prompt_attention,
                 prompt_attention_full = prompt_attention_full,
@@ -734,7 +737,7 @@ def convert_weights_to_fp16(model: nn.Module):
     model.apply(_convert_weights_to_fp16)
 
 
-def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_lora: bool = False, text_lora: bool = False, prompt_tokens: int = 0, prompt_attention: bool = False, prompt_attention_full: bool = False, mask_attention: int = -1):
+def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_lora: bool = False, text_lora: bool = False, relation_tokens: int = 0, prompt_tokens: int = 0, prompt_attention: bool = False, prompt_attention_full: bool = False, mask_attention: int = -1):
     vit = "visual.proj" in state_dict
 
     if vit:
@@ -782,6 +785,7 @@ def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_l
         lora=lora,
         image_lora = image_lora,
         text_lora = text_lora,
+        relation_tokens=relation_tokens,
         prompt_tokens=prompt_tokens,
         prompt_attention = prompt_attention,
         prompt_attention_full = prompt_attention_full,
