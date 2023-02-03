@@ -328,7 +328,7 @@ class ResidualAttentionBlock(nn.Module):
             self.mask = []
             self.mask.append([False] + [True for i in range (num_prompts)] + [False for i in range(49)])
             for i in range(num_prompts):
-                self.mask.append([False for i in range(60)])
+                self.mask.append([False for i in range(49 + self.num_prompts + 1)])
             for i in range(49):
                 self.mask.append([False] + [True for i in range (num_prompts)] + [False for i in range(49)])
             self.mask = torch.BoolTensor(self.mask)

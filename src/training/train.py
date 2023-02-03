@@ -89,6 +89,45 @@ def organize_batch_classes(object_descriptions, valid_objects, vg_bbs, args, dev
     targets = [{"labels": l, "boxes": b} for l,b in zip(tgt_labels,tgt_boxes)]
     return class_tokens, targets
 
+def organize_batch_classes_relations(relations_descriptions, valid_relations, relations_bbs, args, device):
+    class_tokens = []
+    relation_samples = []
+    tgt_boxes = []
+    for i in range (valid_relations.shape[0]):
+        valid_samples = valid_relations[i].item()
+        invalid_samples = args.relation_tokens - valid_samples
+        valid_for_sample = valid_samples * [True] + invalid_samples*[False]
+        relation_samples.append(valid_for_sample)
+
+        if valid_samples == 0:
+            tgt_boxes.append(torch.tensor([]).to(device=device, non_blocking=True))
+        else:
+            mask = torch.tensor(valid_for_sample).unsqueeze(1).expand(-1,4)
+            boxes_for_sample = torch.masked_select(relations_bbs[i],mask).view(-1,4).to(device=device, non_blocking=True)
+            tgt_boxes.append(boxes_for_sample)
+    
+    
+    tgt_labels = []
+    for i in range(relations_descriptions.shape[0]):
+        labels_for_sample = []
+        for j in range(relations_descriptions.shape[1]):
+            if relation_samples[i][j] == False:
+                continue
+            desc = relations_descriptions[i][j]
+            exists = False
+            for k in range (len(class_tokens)):
+                if torch.equal(desc,class_tokens[k]):
+                    exists = True
+                    labels_for_sample.append(k)
+                    break
+            if not exists:
+                labels_for_sample.append(len(class_tokens))
+                class_tokens.append(desc)
+        tgt_labels.append(torch.tensor(labels_for_sample).type(torch.int64).to(device=device, non_blocking=True))
+    class_tokens = torch.stack(class_tokens)
+    targets = [{"labels": l, "boxes": b} for l,b in zip(tgt_labels,tgt_boxes)]
+    return class_tokens, targets
+
 
 
 
@@ -135,11 +174,11 @@ def train_one_epoch(model, object_head, bb_head, relation_head, relation_bb_head
                 vg_iter = iter(vg_dataloader)
                 vg_batch = next(vg_iter)
             if args.negatives:
-                vg_images, vg_texts, valid_objects, vg_bbs, vg_object_descriptions, neg_texts, neg_masks = vg_batch
+                vg_images, vg_texts, valid_objects, vg_bbs, vg_object_descriptions, valid_relations, relations_bbs, vg_relations_descriptions, neg_texts, neg_masks = vg_batch
                 neg_masks = neg_masks.to(device=device, non_blocking=True)
                 texts = torch.cat([texts, vg_texts, neg_texts])
             else:
-                vg_images, vg_texts, valid_objects, vg_bbs, vg_object_descriptions = vg_batch 
+                vg_images, vg_texts, valid_objects, vg_bbs, vg_object_descriptions , valid_relations, relations_bbs, vg_relations_descriptions = vg_batch 
                 texts = torch.cat([texts, vg_texts])
             images = torch.cat([images,vg_images])
         images = images.to(device=device, non_blocking=True)
@@ -147,6 +186,9 @@ def train_one_epoch(model, object_head, bb_head, relation_head, relation_bb_head
         if args.vg_data and args.vg_loss_lambda > 0.0:
             class_tokens, targets = organize_batch_classes(vg_object_descriptions, valid_objects, vg_bbs, args, device)
             class_tokens = class_tokens.to(device=device, non_blocking=True)
+            if args.relation_tokens > 0:
+                relation_class_tokens, relation_targets = organize_batch_classes_relations(vg_relations_descriptions, valid_relations, relations_bbs, args, device)
+                relation_class_tokens = relation_class_tokens.to(device=device, non_blocking=True) 
 
 
 
@@ -156,16 +198,30 @@ def train_one_epoch(model, object_head, bb_head, relation_head, relation_bb_head
         with autocast():
             if args.vg_data and args.vg_loss_lambda > 0:
                 with torch.no_grad():
-                    description_embeddings = model(None, class_tokens)
-                    num_random_rows = args.vg_batch_size*args.prompt_tokens + 1 - description_embeddings.shape[0]
-                    random_rows = torch.rand(num_random_rows, description_embeddings.shape[1]).to(device=device, non_blocking=True)
-                    description_embeddings = torch.cat([description_embeddings,random_rows])
+                    if args.relation_tokens > 0:
+                        all_class_tokens = torch.cat([class_tokens, relation_class_tokens])
+                        all_description_embeddings = model(None, all_class_tokens)
+                        description_embeddings = all_description_embeddings[:class_tokens.shape[0],:]
+                        num_random_rows = args.vg_batch_size*args.prompt_tokens + 1 - description_embeddings.shape[0]
+                        random_rows = torch.rand(num_random_rows, description_embeddings.shape[1]).to(device=device, non_blocking=True)
+                        description_embeddings = torch.cat([description_embeddings,random_rows])
+                        relation_description_embeddings = all_description_embeddings[class_tokens.shape[0]:,:]
+                        num_random_rows = args.vg_batch_size*args.relation_tokens + 1 - relation_description_embeddings.shape[0]
+                        random_rows = torch.rand(num_random_rows, relation_description_embeddings.shape[1]).to(device=device, non_blocking=True)
+                        relation_description_embeddings = torch.cat([relation_description_embeddings,random_rows])
+                    else:
+                        description_embeddings = model(None, class_tokens)
+                        num_random_rows = args.vg_batch_size*args.prompt_tokens + 1 - description_embeddings.shape[0]
+                        random_rows = torch.rand(num_random_rows, description_embeddings.shape[1]).to(device=device, non_blocking=True)
+                        description_embeddings = torch.cat([description_embeddings,random_rows])
+
+                        
 
                 
-            image_features, object_tokens, text_features, logit_scale = model(images, texts)
+            image_features, aux_tokens, text_features, logit_scale = model(images, texts)
             vg_losses = 0
             if args.vg_data and args.vg_loss_lambda > 0.0:
-                object_tokens = object_tokens[-vg_images.shape[0]:,:,:]
+                object_tokens = aux_tokens[-vg_images.shape[0]:,:args.prompt_tokens,:]
                 label_embeddings = object_head(object_tokens)
                 label_predictions = logit_scale * label_embeddings @ description_embeddings.t()
                 bb_predictions = bb_head(object_tokens).sigmoid()
@@ -173,8 +229,19 @@ def train_one_epoch(model, object_head, bb_head, relation_head, relation_bb_head
                 loss_dict = vgcriterion(predictions_dict, targets)
                 weight_dict = vgcriterion.weight_dict
                 vg_losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+                relation_losses = 0.0
+                if args.relation_tokens > 0:
+                    relation_tokens = aux_tokens[-vg_images.shape[0]:,args.prompt_tokens:,:]
+                    label_embeddings = relation_head(relation_tokens)
+                    label_predictions = logit_scale * label_embeddings @ relation_description_embeddings.t()
+                    bb_predictions = relation_bb_head(relation_tokens).sigmoid()
+                    predictions_dict = {"pred_logits" : label_predictions, "pred_boxes": bb_predictions}
+                    loss_dict = relationcriterion(predictions_dict, relation_targets)
+                    weight_dict = relationcriterion.weight_dict
+                    relation_losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+                vg_losses += relation_losses
             if args.negatives:
-                total_loss = loss(image_features, text_features[:-vg_images.shape[0],:], logit_scale) + vg_losses * args.vg_loss_lambda + neg_loss(image_features, text_features, logit_scale, neg_masks, vg_images.shape[0])
+                total_loss = loss(image_features, text_features[:-vg_images.shape[0],:], logit_scale) +  vg_losses* args.vg_loss_lambda + neg_loss(image_features, text_features, logit_scale, neg_masks, vg_images.shape[0])
             else:
                 total_loss = loss(image_features, text_features, logit_scale) + vg_losses * args.vg_loss_lambda
 
