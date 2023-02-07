@@ -520,6 +520,8 @@ def main():
                 "state_dict": model.state_dict(),
                 "object_state_dict": object_head.state_dict(),
                 "bb_state_dict": bb_head.state_dict(),
+                "relation_state_dict": relation_head.state_dict(),
+                "relation_bb_state_dict": relation_bb_head.state_dict(),
                 "optimizer": optimizer.state_dict(),
             }
             if scaler is not None:
