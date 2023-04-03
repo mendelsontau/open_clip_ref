@@ -35,9 +35,9 @@ from training.distributed import is_master, init_distributed_device, world_info_
 from training.logger import setup_logging
 from training.params import parse_args
 from training.scheduler import cosine_lr
-from training.train import train_one_epoch, evaluate, evaluate_winoground, evaluate_auxiliary
+from training.train import train_one_epoch, evaluate, evaluate_winoground, evaluate_auxiliary, evaluate_vsr
 from training.vg_dataset import VgDataset, VgDatasetIterable, VgDatasetText, get_vg_loader, get_vg_val_loader, get_vg_loader_it
-from training.vg_model import PredictionHead, MLP
+from training.vg_model import PredictionHead, MLP, random_rows_container
 from detr.models.matcher import HungarianMatcher
 from detr.models.detr import SetCriterion
 
@@ -138,9 +138,12 @@ def main():
         args.lora,
         args.image_lora,
         args.text_lora,
-        args.prompt_tokens,
+        args.prompts_lora,
+        args.object_tokens,
+        args.relation_tokens,
         args.prompt_attention,
         args.prompt_attention_full,
+        args.prompt_inner_attention,
         args.mask_attention,
         precision=args.precision,
         device=device,
@@ -156,8 +159,48 @@ def main():
     model_visual_size = model.visual.image_size
 
     #vg prediction heads
-    object_head = PredictionHead(768,512).to(args.device)
-    bb_head = PredictionHead(768,4).to(args.device)
+    #object_head = PredictionHead(768,512).to(args.device)
+    #bb_head = PredictionHead(768,4).to(args.device)
+    object_head = None
+    bb_head = None
+    relation_head = None
+    rel_bb_head = None
+    random_rows = None
+    freeze_model = None
+    if args.vg_loss_lambda > 0:
+        object_head = MLP(768,768,512,3).to(args.device)
+        bb_head = MLP(768,768,4,3).to(args.device)
+        if args.relations > 0:
+            relation_head = MLP(768,768,512,3).to(args.device)
+            rel_bb_head = MLP(768,768,4,3).to(args.device)
+
+        random_rows = random_rows_container(args.vg_batch_size * args.objects, 512, args.relations, args.relations * args.vg_batch_size).to(args.device)
+
+        freeze_model, _, _ = create_model_and_transforms(
+            args.model,
+            args.pretrained,
+            args.lora,
+            args.image_lora,
+            args.text_lora,
+            args.prompts_lora,
+            args.object_tokens,
+            args.relation_tokens,
+            args.prompt_attention,
+            args.prompt_attention_full,
+            args.mask_attention,
+            precision=args.precision,
+            device=device,
+            jit=args.torchscript,
+            force_quick_gelu=args.force_quick_gelu,
+            pretrained_image=args.pretrained_image,
+            image_mean=args.image_mean,
+            image_std=args.image_std,
+        )
+
+        with torch.no_grad():          
+            for param, param_m in zip(model.parameters(), freeze_model.parameters()):
+                param_m.data.copy_(param.data)  # initialize
+                param_m.requires_grad = False  # not update by gradient 
 
 
     if args.trace:
@@ -170,21 +213,25 @@ def main():
     #        freeze_bn_stats=args.lock_image_freeze_bn_stats)
     if args.lora >= 0:
         mark_only_lora_as_trainable(model)
-        if args.prompt_tokens > 0:
-            model.visual.prompts.requires_grad_()
+        if args.object_tokens > 0:
+            model.visual.object_prompts.requires_grad_()
+        if args.relation_tokens > 0:
+            model.visual.relation_prompts.requires_grad_()
         if args.prompt_attention:
             for res_block in model.visual.transformer.resblocks:
-                res_block.attn.in_prompts_proj_weight.requires_grad_()
-                res_block.attn.in_prompts_proj_bias.requires_grad_()
-                for param in res_block.attn.out_prompts_proj.parameters():
-                    param.requires_grad_()
+                if args.prompts_lora == -1:
+                    res_block.attn.in_prompts_proj_weight.requires_grad_()
+                    res_block.attn.in_prompts_proj_bias.requires_grad_()
+                    for param in res_block.attn.out_prompts_proj.parameters():
+                        param.requires_grad_()
                 if args.prompt_attention_full:
                     for param in res_block.ln_1_prompt.parameters():
                         param.requires_grad_()
                     for param in res_block.ln_2_prompt.parameters():
                         param.requires_grad_()
-                    for param in res_block.mlp_prompt.parameters():
-                        param.requires_grad_()
+                    if args.prompts_lora == -1:
+                        for param in res_block.mlp_prompt.parameters():
+                            param.requires_grad_()
 
         if args.open_layers != None:
             layers_to_open = args.open_layers.split(",")
@@ -205,8 +252,10 @@ def main():
         if not args.lock_image:
             for param in model.visual.parameters():
                 param.requires_grad_()
-        if args.prompt_tokens > 0:
-            model.visual.prompts.requires_grad_()
+        if args.object_tokens > 0:
+            model.visual.object_prompts.requires_grad_()
+        if args.relation_tokens > 0:
+            model.visual.relation_prompts.requires_grad_()
         if args.prompt_attention:
             for res_block in model.visual.transformer.resblocks:
                 res_block.attn.in_prompts_proj_weight.requires_grad_()
@@ -225,6 +274,8 @@ def main():
             for layer in layers_to_open:
                 for param in model.visual.transformer.resblocks[int(layer)].parameters():
                     param.requires_grad_()
+
+
 
     
 
@@ -254,9 +305,14 @@ def main():
         if args.ddp_static_graph:
             # this doesn't exist in older PyTorch, arg only added if enabled
             ddp_args['static_graph'] = True
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], **ddp_args, find_unused_parameters=True)
-        object_head = torch.nn.parallel.DistributedDataParallel(object_head, device_ids=[device], **ddp_args)
-        bb_head = torch.nn.parallel.DistributedDataParallel(bb_head, device_ids=[device], **ddp_args)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], **ddp_args)
+        if args.vg_loss_lambda > 0:
+            object_head = torch.nn.parallel.DistributedDataParallel(object_head, device_ids=[device], **ddp_args)
+            bb_head = torch.nn.parallel.DistributedDataParallel(bb_head, device_ids=[device], **ddp_args)
+            random_rows = torch.nn.parallel.DistributedDataParallel(random_rows, device_ids=[device], **ddp_args)
+            if args.relations > 0:
+                relation_head = torch.nn.parallel.DistributedDataParallel(object_head, device_ids=[device], **ddp_args)
+                rel_bb_head = torch.nn.parallel.DistributedDataParallel(bb_head, device_ids=[device], **ddp_args)
 
 
     # create optimizer and scaler
@@ -317,14 +373,28 @@ def main():
                 if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
                     sd = {k[len('module.'):]: v for k, v in sd.items()}
                 model.load_state_dict(sd)
-                sd = checkpoint["object_state_dict"]
-                if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
-                    sd = {k[len('module.'):]: v for k, v in sd.items()}
-                object_head.load_state_dict(sd)
-                sd = checkpoint["bb_state_dict"]
-                if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
-                    sd = {k[len('module.'):]: v for k, v in sd.items()}
-                bb_head.load_state_dict(sd)
+                if args.vg_loss_lambda > 0:
+                    sd = checkpoint["object_state_dict"]
+                    if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                        sd = {k[len('module.'):]: v for k, v in sd.items()}
+                    object_head.load_state_dict(sd)
+                    sd = checkpoint["bb_state_dict"]
+                    if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                        sd = {k[len('module.'):]: v for k, v in sd.items()}
+                    bb_head.load_state_dict(sd)
+                    sd = checkpoint["random_rows_state_dict"]
+                    if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                        sd = {k[len('module.'):]: v for k, v in sd.items()}
+                    random_rows.load_state_dict(sd)
+                    if args.relations > 0:
+                        sd = checkpoint["relation_state_dict"]
+                        if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                            sd = {k[len('module.'):]: v for k, v in sd.items()}
+                        relation_head.load_state_dict(sd)
+                        sd = checkpoint["rel_bb_state_dict"]
+                        if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                            sd = {k[len('module.'):]: v for k, v in sd.items()}
+                        rel_bb_head.load_state_dict(sd)
                 if optimizer is not None:
                     optimizer.load_state_dict(checkpoint["optimizer"])
                 if scaler is not None and 'scaler' in checkpoint:
@@ -342,26 +412,32 @@ def main():
     assert len(data), 'At least one train or eval dataset must be specified.'
 
     #vg data
+    vgcriterion = None
+    vgrelcriterion = None
+    vg_dataloader = None
     if args.vg_data:
-        vg_val_dataset = VgDatasetText(args.vg_data, "val", image_transform_vg(model_visual_size), args.prompt_tokens, args.vg_samples)
+        vg_val_dataset = VgDatasetText(args.vg_data, "val", image_transform_vg(model_visual_size), args.objects, args.vg_loss_lambda)
         vg_batch_size = args.vg_batch_size
         vg_vis_dataloader = get_vg_val_loader(vg_val_dataset, args, 16)
         vg_vis_iterator = iter(vg_vis_dataloader)
         vg_vis_batch = next(vg_vis_iterator)
         if args.train_data:
-            vg_train_dataset = VgDatasetText(args.vg_data, "train", image_transform_vg(model_visual_size), args.prompt_tokens, args.vg_samples, args.negatives)
+            vg_train_dataset = VgDatasetText(args.vg_data, "train", image_transform_vg(model_visual_size), args.objects, args.vg_loss_lambda, args.negatives, args.relations)
             vg_dataloader = get_vg_loader(vg_train_dataset, args, vg_batch_size)
-            matcher = HungarianMatcher() 
-            weight_dict = {'loss_ce': 1, 'loss_bbox': 5}
-            weight_dict['loss_giou'] = 2
-            losses = ['labels','boxes','cardinality']
+            if args.vg_loss_lambda > 0:
+                matcher = HungarianMatcher() 
+                weight_dict = {'loss_ce': 1, 'loss_bbox': 5}
+                weight_dict['loss_giou'] = 2
+                losses = ['labels','boxes','cardinality']
 
-            vgcriterion = SetCriterion(vg_batch_size*args.prompt_tokens, matcher=matcher, weight_dict=weight_dict,
-                             eos_coef=0.1, losses=losses)
-            vgcriterion.to(args.device)
-    else:
-        vgcriterion = None
-        vg_dataloader = None
+                vgcriterion = SetCriterion(vg_batch_size*args.objects, matcher=matcher, weight_dict=weight_dict,
+                                eos_coef=(5.5/args.object_tokens), losses=losses)
+                vgcriterion.to(args.device)
+                if args.relations > 0:
+                    num_relation_classes = args.vg_batch_size * args.relations
+                    vgrelcriterion = SetCriterion(num_relation_classes, matcher=matcher, weight_dict=weight_dict,
+                                    eos_coef=(1.8/args.relation_tokens), losses=losses)
+                    vgrelcriterion.to(args.device)
 
     
 
@@ -399,6 +475,7 @@ def main():
         logging.debug('Finished loading wandb.')
     
     if 'train' not in data:
+        #evaluate_vsr(model,image_transform_vg(model_visual_size),args)
         evaluate(model, data, start_epoch, args, writer)
         if args.vlchecklist_frequency > 0:
             vlcl_summary = {"relation": {"samples": 0, "sum": 0.0} , "object":{"samples": 0, "sum": 0.0}, "attribute": {"samples": 0, "sum": 0.0}}
@@ -431,16 +508,18 @@ def main():
                         encoding='utf-8') as f:
                 json.dump(vlcl, f)           
         if args.winoground_frequency > 0:
-            evaluate_winoground(model, preprocess_val, start_epoch, args, writer)
+            #evaluate_winoground(model, preprocess_val, start_epoch, args, writer)
             if args.vg_data and args.vg_loss_lambda > 0.0:
-                evaluate_auxiliary(model, object_head, bb_head, vg_vis_batch,args,start_epoch)
+                evaluate_auxiliary(model, object_head, bb_head,random_rows, vg_vis_batch,args,start_epoch)
         return
+
+
 
     for epoch in range(start_epoch, args.epochs):
         if is_master(args):
             logging.info(f'Start epoch {epoch}')
 
-        train_one_epoch(model, object_head, bb_head, vgcriterion, data, vg_dataloader, epoch, optimizer, scaler, scheduler, args, writer)
+        train_one_epoch(model, freeze_model, object_head, bb_head, relation_head, rel_bb_head, random_rows, vgcriterion, vgrelcriterion, data, vg_dataloader, epoch, optimizer, scaler, scheduler, args, writer)
         completed_epoch = epoch + 1
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):
@@ -478,18 +557,42 @@ def main():
             if args.winoground_frequency > 0 and completed_epoch % args.winoground_frequency == 0:
                 evaluate_winoground(model, preprocess_val, completed_epoch, args, writer)
                 if args.vg_data and args.vg_loss_lambda > 0.0:
-                    evaluate_auxiliary(model, object_head, bb_head, vg_vis_batch, args, completed_epoch)
+                    evaluate_auxiliary(model, object_head, bb_head, random_rows, vg_vis_batch, args, completed_epoch)
 
         # Saving checkpoints.
         if args.save_logs:
-            checkpoint_dict = {
-                "epoch": completed_epoch,
-                "name": args.name,
-                "state_dict": model.state_dict(),
-                "object_state_dict": object_head.state_dict(),
-                "bb_state_dict": bb_head.state_dict(),
-                "optimizer": optimizer.state_dict(),
-            }
+            if args.vg_loss_lambda > 0:
+                if args.relations > 0:
+                    checkpoint_dict = {
+                        "epoch": completed_epoch,
+                        "name": args.name,
+                        "state_dict": model.state_dict(),
+                        "object_state_dict": object_head.state_dict(),
+                        "bb_state_dict": bb_head.state_dict(),
+                        "relation_state_dict": relation_head.state_dict(),
+                        "rel_bb_state_dict": rel_bb_head.state_dict(),
+                        "random_rows_state_dict": random_rows.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                    }
+                else:
+                    checkpoint_dict = {
+                        "epoch": completed_epoch,
+                        "name": args.name,
+                        "state_dict": model.state_dict(),
+                        "object_state_dict": object_head.state_dict(),
+                        "bb_state_dict": bb_head.state_dict(),
+                        "random_rows_state_dict": random_rows.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                    }
+            else:
+                    checkpoint_dict = {
+                        "epoch": completed_epoch,
+                        "name": args.name,
+                        "state_dict": model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                    }
+
+
             if scaler is not None:
                 checkpoint_dict["scaler"] = scaler.state_dict()
 

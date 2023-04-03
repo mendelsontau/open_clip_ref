@@ -305,10 +305,12 @@ class ResidualAttentionBlock(nn.Module):
             scale_attn: bool = False,
             scale_fc: bool = False,
             lora: int = -1,
+            prompts_lora: int = -1,
             prompt_attention: bool = False,
             num_prompts: int = 10,
             prompt_attention_full: bool = False,
-            mask_attention: bool = False
+            mask_attention: bool = False,
+            prompt_inner_attention: bool = False
     ):
         super().__init__()
         self.num_prompts = num_prompts
@@ -324,13 +326,22 @@ class ResidualAttentionBlock(nn.Module):
         #        scale_heads=scale_heads,
         #     )
         self.mask_attention = mask_attention
+        self.prompt_inner_attention = prompt_inner_attention
         if mask_attention:
             self.mask = []
             self.mask.append([False] + [True for i in range (num_prompts)] + [False for i in range(49)])
             for i in range(num_prompts):
-                self.mask.append([False for i in range(60)])
+                self.mask.append([False for i in range(49 + 1 + num_prompts)])
             for i in range(49):
                 self.mask.append([False] + [True for i in range (num_prompts)] + [False for i in range(49)])
+            self.mask = torch.BoolTensor(self.mask)
+        if prompt_inner_attention:
+            self.mask = []
+            self.mask.append([False for i in range(49 + 1 + num_prompts)])
+            for i in range(num_prompts):
+                self.mask.append([True] + [True for k in range (num_prompts)] + [False for k in range(49)])
+            for i in range(49):
+                self.mask.append([False] + [True for k in range (num_prompts)] + [False for k in range(49)])
             self.mask = torch.BoolTensor(self.mask)
         if lora <= 0:
             if not prompt_attention:
@@ -339,7 +350,7 @@ class ResidualAttentionBlock(nn.Module):
                 self.attn = MultiheadAttentionP(d_model, n_head, num_prompts=num_prompts)
         else:
             if prompt_attention:
-                self.attn = lora_layers.MultiheadAttentionPrompts(d_model, n_head, r=lora, num_prompts=num_prompts)
+                self.attn = lora_layers.MultiheadAttentionPrompts(d_model, n_head, r=lora, num_prompts=num_prompts, prompts_lora=prompts_lora)
             else:
                 self.attn = lora_layers.MultiheadAttention(d_model, n_head, r=lora)
         if prompt_attention_full:
@@ -372,16 +383,22 @@ class ResidualAttentionBlock(nn.Module):
                 ("c_proj", lora_layers.Linear(mlp_width, d_model, r=lora))
             ]))
             if self.prompt_attention_full:
-                self.mlp_prompt = nn.Sequential(OrderedDict([
-                ("c_fc", nn.Linear(d_model, mlp_width)),
-                ('ln', LayerNorm(mlp_width) if scale_fc else nn.Identity()),
-                ("gelu", act_layer()),
-                ("c_proj", nn.Linear(mlp_width, d_model))
-            ]))
+                if prompts_lora == -1:
+                    self.mlp_prompt = nn.Sequential(OrderedDict([
+                    ("c_fc", nn.Linear(d_model, mlp_width)),
+                    ('ln', LayerNorm(mlp_width) if scale_fc else nn.Identity()),
+                    ("gelu", act_layer()),
+                    ("c_proj", nn.Linear(mlp_width, d_model))]))
+                else:
+                    self.mlp_prompt = nn.Sequential(OrderedDict([
+                    ("c_fc", lora_layers.Linear(d_model, mlp_width,r=prompts_lora)),
+                    ('ln', LayerNorm(mlp_width) if scale_fc else nn.Identity()),
+                    ("gelu", act_layer()),
+                    ("c_proj", lora_layers.Linear(mlp_width, d_model,r = prompts_lora))]))
             
 
     def attention(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None):
-        if self.mask_attention:
+        if self.mask_attention or self.prompt_inner_attention:
             mask = self.mask.to(device=x.get_device())
             return self.attn(x, x, x, need_weights=False, attn_mask=mask)[0]
         else:
@@ -419,7 +436,7 @@ class ResidualAttentionBlock(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, width: int, layers: int, heads: int,  mlp_ratio: float = 4.0, act_layer: Callable = nn.GELU, lora: int = -1, prompt_attention: bool = False, num_prompts: int = 0, prompt_attention_full: bool = False,mask_attention: int = -1):
+    def __init__(self, width: int, layers: int, heads: int,  mlp_ratio: float = 4.0, act_layer: Callable = nn.GELU, lora: int = -1, prompts_lora: int = -1, prompt_attention: bool = False, num_prompts: int = 0, prompt_attention_full: bool = False,mask_attention: int = -1,prompt_inner_attention: bool = False):
         super().__init__()
         self.width = width
         self.layers = layers
@@ -434,7 +451,7 @@ class Transformer(nn.Module):
 
         resblocks_list = []
         for t in range(layers):
-            resblocks_list.append(ResidualAttentionBlock(width, heads, mlp_ratio, act_layer=act_layer, lora=lora, prompt_attention = prompt_attention,num_prompts=num_prompts, prompt_attention_full=prompt_attention_full,mask_attention=mask_list[t]))
+            resblocks_list.append(ResidualAttentionBlock(width, heads, mlp_ratio, act_layer=act_layer, lora=lora, prompts_lora = prompts_lora, prompt_attention = prompt_attention,num_prompts=num_prompts, prompt_attention_full=prompt_attention_full,mask_attention=mask_list[t],prompt_inner_attention=prompt_inner_attention))
         self.resblocks = nn.ModuleList(resblocks_list)
         #self.resblocks = nn.ModuleList([
         #    ResidualAttentionBlock(width, heads, mlp_ratio, act_layer=act_layer, lora=lora, prompt_attention = prompt_attention,num_prompts=num_prompts, prompt_attention_full=prompt_attention_full)
@@ -463,10 +480,13 @@ class VisualTransformer(nn.Module):
             act_layer: Callable = nn.GELU,
             lora: int = -1,
             image_lora: bool = False,
-            prompt_tokens: int = 0,
+            prompts_lora: int = -1,
+            object_tokens: int = 0,
+            relation_tokens: int = 0,
             prompt_attention: bool = False,
             prompt_attention_full: bool = False,
-            mask_attention: int = -1
+            mask_attention: int = -1,
+            prompt_inner_attention: bool = False
     ):
         super().__init__()
         self.image_size = to_2tuple(image_size)
@@ -477,25 +497,34 @@ class VisualTransformer(nn.Module):
             self.conv1 = lora_layers.Conv2d(in_channels=3, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False, r=lora)
         else:
             self.conv1 = nn.Conv2d(in_channels=3, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False)
-        self.num_tokens = prompt_tokens
+        self.num_tokens = object_tokens + relation_tokens
 
         scale = width ** -0.5
         self.class_embedding = nn.Parameter(scale * torch.randn(width))
         self.positional_embedding = nn.Parameter(scale * torch.randn(self.grid_size[0] * self.grid_size[1] + 1, width))
         self.ln_pre = LayerNorm(width)
         if image_lora:
-            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=lora, prompt_attention = prompt_attention,num_prompts = prompt_tokens, prompt_attention_full=prompt_attention_full,mask_attention=mask_attention)
+            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=lora, prompts_lora=prompts_lora, prompt_attention = prompt_attention,num_prompts = self.num_tokens, prompt_attention_full=prompt_attention_full,mask_attention=mask_attention,prompt_inner_attention=prompt_inner_attention)
         else:
-            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=-1, prompt_attention = prompt_attention,num_prompts = prompt_tokens,prompt_attention_full=prompt_attention_full,mask_attention=mask_attention)
+            self.transformer = Transformer(width, layers, heads, mlp_ratio, act_layer=act_layer, lora=-1,prompts_lora=-1, prompt_attention = prompt_attention,num_prompts = self.num_tokens,prompt_attention_full=prompt_attention_full,mask_attention=mask_attention,prompt_inner_attention=prompt_inner_attention)
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
-        if self.num_tokens > 0:
+        self.object_tokens = object_tokens
+        if self.object_tokens > 0:
             val = math.sqrt(6. / float(3 * functools.reduce(mul, _pair(patch_size), 1) + width))  #prompt init per visual prompt tuning
 
-            self.prompts = nn.Parameter(torch.zeros(1, self.num_tokens, width))
+            self.object_prompts = nn.Parameter(torch.zeros(1, object_tokens, width))
             # xavier_uniform initialization
-            nn.init.uniform_(self.prompts, -val, val) 
+            nn.init.uniform_(self.object_prompts, -val, val) 
+
+        self.relation_tokens = relation_tokens
+        if self.relation_tokens > 0:
+            val = math.sqrt(6. / float(3 * functools.reduce(mul, _pair(patch_size), 1) + width))  #prompt init per visual prompt tuning
+
+            self.relation_prompts = nn.Parameter(torch.zeros(1, relation_tokens, width))
+            # xavier_uniform initialization
+            nn.init.uniform_(self.relation_prompts, -val, val) 
 
     def lock(self, unlocked_groups=0, freeze_bn_stats=False):
         assert unlocked_groups == 0, 'partial locking not currently supported for this model'
@@ -516,8 +545,10 @@ class VisualTransformer(nn.Module):
         x = x + self.positional_embedding.to(x.dtype)
         x = self.ln_pre(x)
 
-        if self.num_tokens > 0:
-            x = torch.cat([x[:, :1, :],self.prompts.expand(x.shape[0], -1, -1),x[:, 1:, :]], dim=1)
+        if self.object_tokens > 0 and self.relation_tokens > 0:
+            x = torch.cat([x[:, :1, :],self.object_prompts.expand(x.shape[0], -1, -1), self.relation_prompts.expand(x.shape[0], -1, -1),x[:, 1:, :]], dim=1)
+        elif self.object_tokens > 0:
+            x = torch.cat([x[:, :1, :],self.object_prompts.expand(x.shape[0], -1, -1),x[:, 1:, :]], dim=1)
 
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
@@ -566,10 +597,13 @@ class CLIP(nn.Module):
             lora: int = -1,
             image_lora: bool = False,
             text_lora: bool = False,
-            prompt_tokens: int = 0,
+            prompts_lora: int = -1,
+            object_tokens: int = 0,
+            relation_tokens: int = 0,
             prompt_attention: bool = False,
             prompt_attention_full: bool = False,
-            mask_attention: int = -1
+            mask_attention: int = -1,
+            prompt_inner_attention: bool = False
     ):
         super().__init__()
         if isinstance(vision_cfg, dict):
@@ -616,10 +650,13 @@ class CLIP(nn.Module):
                 act_layer=act_layer,
                 lora=lora,
                 image_lora = image_lora,
-                prompt_tokens=prompt_tokens,
+                prompts_lora = prompts_lora,
+                object_tokens=object_tokens,
+                relation_tokens=relation_tokens,
                 prompt_attention = prompt_attention,
                 prompt_attention_full = prompt_attention_full,
-                mask_attention=mask_attention
+                mask_attention=mask_attention,
+                prompt_inner_attention=prompt_inner_attention
             )
 
         self.transformer = Transformer(
@@ -638,6 +675,7 @@ class CLIP(nn.Module):
         self.text_projection = nn.Parameter(torch.empty(text_cfg.width, embed_dim))
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         self.register_buffer('attn_mask', self.build_attention_mask(), persistent=False)
+
 
         self.init_parameters()
 
@@ -734,7 +772,7 @@ def convert_weights_to_fp16(model: nn.Module):
     model.apply(_convert_weights_to_fp16)
 
 
-def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_lora: bool = False, text_lora: bool = False, prompt_tokens: int = 0, prompt_attention: bool = False, prompt_attention_full: bool = False, mask_attention: int = -1):
+def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_lora: bool = False, text_lora: bool = False, prompts_lora: int = -1, object_tokens: int = 0, relation_tokens: int = 0, prompt_attention: bool = False, prompt_attention_full: bool = False, mask_attention: int = -1,prompt_inner_attention: bool = False):
     vit = "visual.proj" in state_dict
 
     if vit:
@@ -782,10 +820,13 @@ def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_l
         lora=lora,
         image_lora = image_lora,
         text_lora = text_lora,
-        prompt_tokens=prompt_tokens,
+        prompts_lora = prompts_lora,
+        object_tokens=object_tokens,
+        relation_tokens=relation_tokens,
         prompt_attention = prompt_attention,
         prompt_attention_full = prompt_attention_full,
-        mask_attention=mask_attention
+        mask_attention=mask_attention,
+        prompt_inner_attention=prompt_inner_attention
     )
 
     for key in ["input_resolution", "context_length", "vocab_size"]:
@@ -793,14 +834,21 @@ def build_model_from_openai_state_dict(state_dict: dict, lora: int = -1, image_l
 
     convert_weights_to_fp16(model)
     model.load_state_dict(state_dict, strict=False)
-    #model.ln_final.weight = nn.Parameter(state_dict["ln_final.weight"])
-    #model.ln_final.bias = nn.Parameter(state_dict["ln_final.bias"])
-    #model.token_embedding.weight = nn.Parameter(state_dict["token_embedding.weight"])
-    #model.positional_embedding = nn.Parameter(state_dict["positional_embedding"])
-    #model.text_projection = nn.Parameter(state_dict["text_projection"])
-    #model.logit_scale = nn.Parameter(state_dict["logit_scale"])
-
-    #model.transformer.load_state_dict(state_dict, strict=False)
+    if prompts_lora != -1:
+        with torch.no_grad():
+            for b in model.visual.transformer.resblocks:
+                b.ln_1_prompt.weight.copy_(b.ln_1.weight)
+                b.ln_1_prompt.bias.copy_(b.ln_1.bias)
+                b.ln_2_prompt.weight.copy_(b.ln_2.weight)
+                b.ln_2_prompt.bias.copy_(b.ln_2.bias)
+                b.mlp_prompt.c_fc.weight.copy_(b.mlp.c_fc.weight)
+                b.mlp_prompt.c_fc.bias.copy_(b.mlp.c_fc.bias)
+                b.mlp_prompt.c_proj.weight.copy_(b.mlp.c_proj.weight)
+                b.mlp_prompt.c_proj.bias.copy_(b.mlp.c_proj.bias)
+                b.attn.in_prompts_proj_weight.copy_(b.attn.in_proj_weight)
+                b.attn.in_prompts_proj_bias.copy_(b.attn.in_proj_bias)
+                b.attn.out_prompts_proj.weight.copy_(b.attn.out_proj.weight)
+                b.attn.out_prompts_proj.bias.copy_(b.attn.out_proj.bias)
     return model.eval()
 
 

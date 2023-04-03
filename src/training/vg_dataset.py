@@ -124,7 +124,7 @@ def apply_negative_type_1(walks, relations_annotations):
             rel = walk[r]
             if rel["object_id"] != -1:
                 all_relations.append((rel,w,r))
-
+    success = False
     random.shuffle(all_relations)
     for rand_rel in all_relations:
         success = False
@@ -153,7 +153,7 @@ def apply_negative_type_2(walks, relations_annotations):
             rel = walk[r]
             if rel["object_id"] != -1:
                 all_relations.append((rel,w,r))
-
+    success = False
     random.shuffle(all_relations)
     for rand_rel in all_relations:
         success = False
@@ -261,7 +261,7 @@ class VgDataset(Dataset):
 
 
 class VgDatasetText(Dataset):
-    def __init__(self, vg_path, split, transforms, num_objects, num_samples, negatives = False):
+    def __init__(self, vg_path, split, transforms, num_objects, vg_loss_lambda,  negatives = False, relations = 0):
         logging.debug(f'Loading data from visual genome.')
         f = open(os.path.join(vg_path,"vg_150k_" + split +  ".json"))
         self.data = json.load(f)
@@ -272,17 +272,16 @@ class VgDatasetText(Dataset):
         self.vg_path = vg_path
         self.clip_image_size = 224
         self.transforms = transforms
-        self.num_samples = num_samples
         self.split = split
-        self.num_objects = num_objects if num_objects > 0 else 10
+        self.num_objects = num_objects
         self.negatives = negatives
+        self.only_text = True if vg_loss_lambda == 0.0 else False
+        self.relations  = relations > 0
+        self.num_relations = relations
         logging.debug('Done loading data.')
 
     def __len__(self):
-        if self.num_samples is None:
-            return len(self.data)
-        else:
-            return self.num_samples
+        return len(self.data)
 
     def __getitem__(self, idx):
         #load image
@@ -300,20 +299,28 @@ class VgDatasetText(Dataset):
         image_path = os.path.join(self.vg_path,folder,folder,filename)
 
         image = Image.open(image_path)
+        #image = image.convert('RGB')
         image = image.crop(crop_dimensions)
         image = self.transforms(image)
 
-        #load objects and choose randomly
+        walks = self.data[idx]["relations"]
         all_objects_dict = self.data[idx]["objects"]
         objects = []
         for id in all_objects_dict:
             objects.append(all_objects_dict[id])
-        missing_objects = self.num_objects - len(objects)
-        valid_objects = torch.tensor(self.num_objects - missing_objects, dtype=torch.long)
+        if not self.only_text:
+            missing_objects = self.num_objects - len(objects)
+            valid_objects = torch.tensor(self.num_objects - missing_objects, dtype=torch.long)
+            if self.relations:
+                #find all relations
+                relations = [y for x in walks for y in x]
+                relations = [rel for rel in relations if rel["relationship_id"] != -1]
+                missing_relations = self.num_relations - len(relations)
+                valid_relations = torch.tensor(self.num_relations - missing_relations, dtype=torch.long)
 
-        walks = self.data[idx]["relations"]
+        #generate text
         text = create_text_from_graph(walks, all_objects_dict)
-
+        text = tokenize([text])[0]
         if self.negatives and self.split == "train":
             start_index = random.randint(0,3)
             for i in range(start_index,start_index + 4):
@@ -337,54 +344,111 @@ class VgDatasetText(Dataset):
             if success:
                 neg_text = create_text_from_graph(new_walks,new_all_objects_dict)
                 neg_mask = torch.tensor(1.0)
+            neg_text = tokenize([neg_text])[0]
 
         
         #prepare bounding boxes
-        objects_bbs = [[ob["x"],ob["y"],ob["w"], ob["h"]] for ob in objects]
-        for obj in objects_bbs:
-            new_x1 = obj[0]
-            new_y1 = obj[1]
-            new_x2 = obj[0] + obj[2]
-            new_y2 = obj[1] + obj[3]
-            if obj[0] < min_x:
-                new_x1 = min_x
-            if obj[1] < min_y:
-                new_y1 = min_y
-            if obj[0] + obj[2] > max_x:
-                new_x2 = max_x
-            if obj[1] + obj[3] > max_y:
-                new_y2 = max_y
-            obj[0] = new_x1 - min_x
-            obj[1] = new_y1 - min_y
-            obj[2] = new_x2 - new_x1
-            obj[3] = new_y2 - new_y1
-            
-        bounding_boxes = [[(ob[0] + 0.5*ob[2])/image_w,(ob[1] + 0.5*ob[3])/image_h,min((ob[2])/image_w,1.0),min((ob[3])/image_h,1.0)] for ob in objects_bbs]
-        if missing_objects > 0:
-            bounding_boxes += [[0.0,0.0,0.0,0.0] for i in range(missing_objects)]
-        bounding_boxes = torch.tensor(bounding_boxes)
+        if not self.only_text:
+            objects_bbs = [[ob["x"],ob["y"],ob["w"], ob["h"]] for ob in objects]
+            for obj in objects_bbs:
+                new_x1 = obj[0]
+                new_y1 = obj[1]
+                new_x2 = obj[0] + obj[2]
+                new_y2 = obj[1] + obj[3]
+                if obj[0] < min_x:
+                    new_x1 = min_x
+                if obj[1] < min_y:
+                    new_y1 = min_y
+                if obj[0] + obj[2] > max_x:
+                    new_x2 = max_x
+                if obj[1] + obj[3] > max_y:
+                    new_y2 = max_y
+                obj[0] = new_x1 - min_x
+                obj[1] = new_y1 - min_y
+                obj[2] = new_x2 - new_x1
+                obj[3] = new_y2 - new_y1
+                
+            bounding_boxes = [[(ob[0] + 0.5*ob[2])/image_w,(ob[1] + 0.5*ob[3])/image_h,min((ob[2])/image_w,1.0),min((ob[3])/image_h,1.0)] for ob in objects_bbs]
+            if missing_objects > 0:
+                bounding_boxes += [[0.0,0.0,0.0,0.0] for i in range(missing_objects)]
+            bounding_boxes = torch.tensor(bounding_boxes)
 
-        #prepare object descriptions
-        object_descriptions = [obj["attributes"][0] + " " + obj["names"][0] if "attributes" in obj else obj["names"][0] for obj in objects]
-        object_descriptions = [repair_text(desc)for desc in object_descriptions]
-        if missing_objects > 0:
-            object_descriptions += ["" for i in range(missing_objects)]
-        if self.split == "val":
-            max_chars = 150
-            object_text = [[ord(c) for c in s] for s in object_descriptions]
-            padding = [[int(36) for i in range(max_chars - len(s))] for s in object_descriptions]
-            object_texts = [lst1 + lst2 for lst1, lst2 in zip(object_text,padding)]
-            text_lengths = [len(s) for s in object_descriptions]
-        object_descriptions = tokenize(object_descriptions)
-        text = tokenize([text])[0]
-        if self.negatives and self.split == "train":
-            neg_text = tokenize([neg_text])[0]
+            #prepare object descriptions
+            object_descriptions = [obj["attributes"][0] + " " + obj["names"][0] if "attributes" in obj else obj["names"][0] for obj in objects]
+            object_descriptions = [repair_text(desc)for desc in object_descriptions]
+            if missing_objects > 0:
+                object_descriptions += ["" for i in range(missing_objects)]
+            if self.split == "val":
+                max_chars = 150
+                object_text = [[ord(c) for c in s] for s in object_descriptions]
+                padding = [[int(36) for i in range(max_chars - len(s))] for s in object_descriptions]
+                object_texts = [lst1 + lst2 for lst1, lst2 in zip(object_text,padding)]
+                text_lengths = [len(s) for s in object_descriptions]
+            object_descriptions = tokenize(object_descriptions)
+
+            if self.relations:
+                #prepare relations bounding boxes
+                relations_bbs = []
+                for relation in relations:
+                    subject_id = relation["subject_id"]
+                    object_id = relation["object_id"]
+                    subject_index = 0
+                    object_index = 0
+                    for k in range (len(objects)):
+                        if objects[k]["object_id"] == subject_id:
+                            subject_index = k
+                        if objects[k]["object_id"] == object_id:
+                            object_index = k
+                    subject_bb = objects_bbs[subject_index]
+                    object_bb = objects_bbs[object_index]
+                    relation_x_min = min(subject_bb[0],object_bb[0])
+                    relation_y_min = min(subject_bb[1],object_bb[1])
+                    relation_x_max = max(subject_bb[0] + subject_bb[2],object_bb[0] + object_bb[2])
+                    relation_y_max = max(subject_bb[1] + subject_bb[3],object_bb[1] + object_bb[3])
+                    relation_w = relation_x_max - relation_x_min
+                    relation_h = relation_y_max - relation_y_min
+                    relation_bb = [relation_x_min,relation_y_min,relation_w,relation_h]
+                    relations_bbs.append(relation_bb)
+
+                relations_bounding_boxes = [[(ob[0] + 0.5*ob[2])/image_w,(ob[1] + 0.5*ob[3])/image_h,min((ob[2])/image_w,1.0),min((ob[3])/image_h,1.0)] for ob in relations_bbs]
+                if missing_relations > 0:
+                    relations_bounding_boxes += [[0.0,0.0,0.0,0.0] for i in range(missing_relations)]
+                relations_bounding_boxes = torch.tensor(relations_bounding_boxes)
 
 
+                #prepare relation descriptions
+                relations_descriptions = []
+                for relation in relations:
+                    subject_id = str(relation["subject_id"])
+                    object_id = str(relation["object_id"])
+                    subject_description =  all_objects_dict[subject_id]["names"][0] 
+                    obj_description =  all_objects_dict[object_id]["names"][0]
+                    predicate = relation["predicate"]
+                    relation_description = subject_description + " " + predicate + " " + obj_description
+                    relations_descriptions.append(relation_description)
+                relations_descriptions = [repair_text(desc)for desc in relations_descriptions]
+                if missing_relations > 0:
+                    relations_descriptions += ["" for i in range(missing_relations)]
+                relations_descriptions = tokenize(relations_descriptions)
+
+        if self.only_text:
+            if self.negatives:
+                return image, text, neg_text, neg_mask
+            else:
+                return image, text
+
+        
         if self.split == "train" and self.negatives:
-            return image, text, valid_objects, bounding_boxes, object_descriptions, neg_text, neg_mask
+            if not self.relations:
+                return image, text, valid_objects, bounding_boxes, object_descriptions, neg_text, neg_mask
+            else:
+                return image, text, valid_objects, bounding_boxes, object_descriptions, valid_relations, relations_bounding_boxes, relations_descriptions, neg_text, neg_mask
+    
         elif self.split == "train" and not self.negatives:
-            return image, text, valid_objects, bounding_boxes, object_descriptions
+            if not self.relations:
+                return image, text, valid_objects, bounding_boxes, object_descriptions
+            else:
+                return image, text, valid_objects, bounding_boxes, object_descriptions, valid_relations, relations_bounding_boxes, relations_descriptions
         else:
             return image, text, valid_objects, bounding_boxes, object_descriptions, torch.tensor(object_texts), text_lengths
 

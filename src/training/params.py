@@ -62,16 +62,40 @@ def parse_args():
         help="apply lora to text encoder"
     )
     parser.add_argument(
+        "--prompts-lora",
+        type=int,
+        default=-1,
+        help="lora rank for prompts",
+    )
+    parser.add_argument(
         "--negatives",
         default=False,
         action="store_true",
         help="add negative texts"
-    )        
+    ) 
     parser.add_argument(
-        "--prompt-tokens",
+        "--objects",
         type=int,
         default=0,
-        help="number of prompt tokens",
+        help="max number of objects in image",
+    )       
+    parser.add_argument(
+        "--object-tokens",
+        type=int,
+        default=0,
+        help="number of object tokens",
+    )
+    parser.add_argument(
+        "--relations",
+        type=int,
+        default=0,
+        help="max number of relations in image",
+    )       
+    parser.add_argument(
+        "--relation-tokens",
+        type=int,
+        default=0,
+        help="number of relation tokens",
     )
     parser.add_argument(
         "--prompt-attention",
@@ -85,6 +109,13 @@ def parse_args():
         action="store_true",
         help="different sequence for prompts"
     )
+    parser.add_argument(
+        "--prompt-inner-attention",
+        default=False,
+        action="store_true",
+        help="only cls token looks at prompts"
+    )
+    parser.add_argument("--momentum", type=float, default=0.0, help="momentum rate.")
     parser.add_argument(
         "--mask-attention",
         type=int,
@@ -183,7 +214,7 @@ def parse_args():
     parser.add_argument(
         "--warmup", type=int, default=10000, help="Number of steps to warmup for."
     )
-    parser.add_argument("--vg-loss-lambda", type=float, default=0.001, help="Weight of vg loss.")
+    parser.add_argument("--vg-loss-lambda", type=float, default=0.0, help="Weight of vg loss.")
 
     parser.add_argument(
         "--use-bn-sync",
