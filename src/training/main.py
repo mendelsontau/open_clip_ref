@@ -43,6 +43,7 @@ from detr.models.detr import SetCriterion
 
 from VL_CheckList.example_models.open_clip.engine import OPEN_CLIP
 from VL_CheckList.vl_checklist.evaluate import Evaluate
+from training.coco_data import get_data_coco
 
 
 def random_seed(seed=42, rank=0):
@@ -351,14 +352,28 @@ def main():
             if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
                 sd = {k[len('module.'):]: v for k, v in sd.items()}
             model.load_state_dict(sd, strict=False)
-            sd = checkpoint["object_state_dict"]
-            if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
-                sd = {k[len('module.'):]: v for k, v in sd.items()}
-            object_head.load_state_dict(sd)
-            sd = checkpoint["bb_state_dict"]
-            if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
-                sd = {k[len('module.'):]: v for k, v in sd.items()}
-            bb_head.load_state_dict(sd)
+            if args.vg_loss_lambda > 0:
+                sd = checkpoint["object_state_dict"]
+                if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                    sd = {k[len('module.'):]: v for k, v in sd.items()}
+                object_head.load_state_dict(sd)
+                sd = checkpoint["bb_state_dict"]
+                if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                    sd = {k[len('module.'):]: v for k, v in sd.items()}
+                bb_head.load_state_dict(sd)
+                sd = checkpoint["random_rows_state_dict"]
+                if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                    sd = {k[len('module.'):]: v for k, v in sd.items()}
+                random_rows.load_state_dict(sd)
+                if args.relations > 0:
+                    sd = checkpoint["relation_state_dict"]
+                    if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                        sd = {k[len('module.'):]: v for k, v in sd.items()}
+                    relation_head.load_state_dict(sd)
+                    sd = checkpoint["rel_bb_state_dict"]
+                    if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                        sd = {k[len('module.'):]: v for k, v in sd.items()}
+                    rel_bb_head.load_state_dict(sd)
 
 
     # optionally resume from a checkpoint
@@ -408,8 +423,11 @@ def main():
             logging.info("=> no checkpoint found at '{}'".format(args.resume))
 
     # initialize datasets
-    data = get_data(args, (preprocess_train, preprocess_val), epoch=start_epoch)
-    assert len(data), 'At least one train or eval dataset must be specified.'
+    if args.coco == False:
+        data = get_data(args, (preprocess_train, preprocess_val), epoch=start_epoch)
+        #assert len(data), 'At least one train or eval dataset must be specified.'
+    else:
+        data = get_data_coco(args,preprocess_train,epoch = start_epoch)
 
     #vg data
     vgcriterion = None
@@ -425,8 +443,8 @@ def main():
             vg_train_dataset = VgDatasetText(args.vg_data, "train", image_transform_vg(model_visual_size), args.objects, args.vg_loss_lambda, args.negatives, args.relations)
             vg_dataloader = get_vg_loader(vg_train_dataset, args, vg_batch_size)
             if args.vg_loss_lambda > 0:
-                matcher = HungarianMatcher() 
-                weight_dict = {'loss_ce': 1, 'loss_bbox': 5}
+                matcher = HungarianMatcher(cost_class=args.loss_ce) 
+                weight_dict = {'loss_ce': args.loss_ce, 'loss_bbox': 5}
                 weight_dict['loss_giou'] = 2
                 losses = ['labels','boxes','cardinality']
 
@@ -508,7 +526,7 @@ def main():
                         encoding='utf-8') as f:
                 json.dump(vlcl, f)           
         if args.winoground_frequency > 0:
-            #evaluate_winoground(model, preprocess_val, start_epoch, args, writer)
+            evaluate_winoground(model, preprocess_val, start_epoch, args, writer)
             if args.vg_data and args.vg_loss_lambda > 0.0:
                 evaluate_auxiliary(model, object_head, bb_head,random_rows, vg_vis_batch,args,start_epoch)
         return
@@ -524,40 +542,40 @@ def main():
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):
             evaluate(model, data, completed_epoch, args, writer)
-            if args.vlchecklist_frequency > 0 and completed_epoch % args.vlchecklist_frequency == 0:
-                vlcl_summary = {"relation": {"samples": 0, "sum": 0.0} , "object":{"samples": 0, "sum": 0.0}, "attribute": {"samples": 0, "sum": 0.0}}
-                vl_model = OPEN_CLIP(f'epoch {completed_epoch}',model, preprocess_val)
-                vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip1.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
-                vl_dict = vl_eval.start()
-                for cat in vlcl_summary:
-                    vlcl_summary[cat]["sum"] += vl_dict[cat]["sum"]
-                    vlcl_summary[cat]["samples"] += vl_dict[cat]["samples"]
-                vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip2.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
-                vl_dict = vl_eval.start()
-                for cat in vlcl_summary:
-                    vlcl_summary[cat]["sum"] += vl_dict[cat]["sum"]
-                    vlcl_summary[cat]["samples"] += vl_dict[cat]["samples"]
-                vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip3.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
-                vl_dict = vl_eval.start()
-                for cat in vlcl_summary:
-                    vlcl_summary[cat]["sum"] += vl_dict[cat]["sum"]
-                    vlcl_summary[cat]["samples"] += vl_dict[cat]["samples"]
-                vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip4.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
-                vl_dict = vl_eval.start()
-                for cat in vlcl_summary:
-                    vlcl_summary[cat]["sum"] += vl_dict[cat]["sum"]
-                    vlcl_summary[cat]["samples"] += vl_dict[cat]["samples"]
-                vlcl = {"relation": vlcl_summary["relation"]["sum"]/vlcl_summary["relation"]["samples"],
-                "attribute": vlcl_summary["attribute"]["sum"]/vlcl_summary["attribute"]["samples"],
-                "object": vlcl_summary["object"]["sum"]/vlcl_summary["object"]["samples"]
-                }
-                with open(os.path.join(os.path.join(args.logs, args.name), "vl-checklist", 'itc', f'summary_{completed_epoch}.json'), 'w',
-                            encoding='utf-8') as f:
-                    json.dump(vlcl, f)
-            if args.winoground_frequency > 0 and completed_epoch % args.winoground_frequency == 0:
-                evaluate_winoground(model, preprocess_val, completed_epoch, args, writer)
-                if args.vg_data and args.vg_loss_lambda > 0.0:
-                    evaluate_auxiliary(model, object_head, bb_head, random_rows, vg_vis_batch, args, completed_epoch)
+        if args.vlchecklist_frequency > 0 and completed_epoch % args.vlchecklist_frequency == 0:
+            vlcl_summary = {"relation": {"samples": 0, "sum": 0.0} , "object":{"samples": 0, "sum": 0.0}, "attribute": {"samples": 0, "sum": 0.0}}
+            vl_model = OPEN_CLIP(f'epoch {completed_epoch}',model, preprocess_val)
+            vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip1.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
+            vl_dict = vl_eval.start()
+            for cat in vlcl_summary:
+                vlcl_summary[cat]["sum"] += vl_dict[cat]["sum"]
+                vlcl_summary[cat]["samples"] += vl_dict[cat]["samples"]
+            vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip2.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
+            vl_dict = vl_eval.start()
+            for cat in vlcl_summary:
+                vlcl_summary[cat]["sum"] += vl_dict[cat]["sum"]
+                vlcl_summary[cat]["samples"] += vl_dict[cat]["samples"]
+            vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip3.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
+            vl_dict = vl_eval.start()
+            for cat in vlcl_summary:
+                vlcl_summary[cat]["sum"] += vl_dict[cat]["sum"]
+                vlcl_summary[cat]["samples"] += vl_dict[cat]["samples"]
+            vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip4.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
+            vl_dict = vl_eval.start()
+            for cat in vlcl_summary:
+                vlcl_summary[cat]["sum"] += vl_dict[cat]["sum"]
+                vlcl_summary[cat]["samples"] += vl_dict[cat]["samples"]
+            vlcl = {"relation": vlcl_summary["relation"]["sum"]/vlcl_summary["relation"]["samples"],
+            "attribute": vlcl_summary["attribute"]["sum"]/vlcl_summary["attribute"]["samples"],
+            "object": vlcl_summary["object"]["sum"]/vlcl_summary["object"]["samples"]
+            }
+            with open(os.path.join(os.path.join(args.logs, args.name), "vl-checklist", 'itc', f'summary_{completed_epoch}.json'), 'w',
+                        encoding='utf-8') as f:
+                json.dump(vlcl, f)
+        if args.winoground_frequency > 0 and completed_epoch % args.winoground_frequency == 0:
+            evaluate_winoground(model, preprocess_val, completed_epoch, args, writer)
+            if args.vg_data and args.vg_loss_lambda > 0.0:
+                evaluate_auxiliary(model, object_head, bb_head, random_rows, vg_vis_batch, args, completed_epoch)
 
         # Saving checkpoints.
         if args.save_logs:

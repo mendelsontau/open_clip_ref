@@ -445,7 +445,7 @@ class Transformer(nn.Module):
         if mask_attention == -1:
             mask_list = [False for i in range(layers)]
         else:
-            mask_list = [False for i in range(mask_attention)] + [True for l in range(layers - mask_attention)]
+            mask_list = [True for i in range(mask_attention)] + [False for l in range(layers - mask_attention)]
             mask_list.reverse()
 
 

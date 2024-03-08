@@ -26,6 +26,13 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--coco",
+        default=False,
+        action="store_true",
+        help="train with coco",
+    )
+
+    parser.add_argument(
         "--val-data",
         type=str,
         default=None,
@@ -215,6 +222,8 @@ def parse_args():
         "--warmup", type=int, default=10000, help="Number of steps to warmup for."
     )
     parser.add_argument("--vg-loss-lambda", type=float, default=0.0, help="Weight of vg loss.")
+    parser.add_argument("--negatives-loss-lambda", type=float, default=1.0, help="Weight of vg loss.")
+    parser.add_argument("--loss-ce", type=float, default=1.0, help="Weight of class in matcher.")
 
     parser.add_argument(
         "--use-bn-sync",

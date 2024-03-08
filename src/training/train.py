@@ -157,7 +157,7 @@ def train_one_epoch(model, freeze_model, object_head, bb_head, relation_head, re
         world_size=args.world_size,
         use_horovod=args.horovod)
     if args.negatives:
-        neg_loss = HNLoss()
+        neg_loss = HNLoss(alpha=args.negatives_loss_lambda)
 
     data['train'].set_epoch(epoch)  # set epoch in process safe manner via sampler or shared_epoch
     dataloader = data['train'].dataloader
@@ -245,18 +245,18 @@ def train_one_epoch(model, freeze_model, object_head, bb_head, relation_head, re
                 label_predictions = logit_scale * label_embeddings @ object_description_embeddings.t()
                 bb_predictions = bb_head(object_tokens).sigmoid()
                 predictions_dict = {"pred_logits" : label_predictions, "pred_boxes": bb_predictions}
-                loss_dict = vgcriterion(predictions_dict, targets)
+                objects_loss_dict = vgcriterion(predictions_dict, targets)
                 weight_dict = vgcriterion.weight_dict
-                vg_losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+                vg_losses = sum(objects_loss_dict[k] * weight_dict[k] for k in objects_loss_dict.keys() if k in weight_dict)
                 if args.relations > 0:
                     relation_tokens = extra_tokens[-vg_images.shape[0]:,args.object_tokens : args.object_tokens + args.relation_tokens,:]
                     label_embeddings = relation_head(relation_tokens)
                     label_predictions = logit_scale * label_embeddings @ relation_description_embeddings.t()
                     bb_predictions = rel_bb_head(relation_tokens).sigmoid()
                     predictions_dict = {"pred_logits" : label_predictions, "pred_boxes": bb_predictions}
-                    loss_dict = vgrelcriterion(predictions_dict, relations_targets)
+                    relations_loss_dict = vgrelcriterion(predictions_dict, relations_targets)
                     weight_dict = vgrelcriterion.weight_dict
-                    vg_losses += sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+                    vg_losses += sum(relations_loss_dict[k] * weight_dict[k] for k in relations_loss_dict.keys() if k in weight_dict)
                     vg_losses /= 2
             if args.negatives:
                 clip_loss = loss(image_features, text_features[:-vg_images.shape[0],:], logit_scale)
@@ -323,9 +323,9 @@ def train_one_epoch(model, freeze_model, object_head, bb_head, relation_head, re
                 negatives_loss_m.update(negatives_loss.item(), torch.sum(neg_masks).item())
             if args.vg_loss_lambda > 0.0:
                 vg_loss_m.update(vg_losses.item(),vg_batch_size)
-                ce_loss_m.update(loss_dict["loss_ce"].item(),vg_batch_size)
-                bbox_loss_m.update(loss_dict["loss_bbox"].item(),vg_batch_size)
-                giou_loss_m.update(loss_dict["loss_giou"].item(),vg_batch_size)
+                ce_loss_m.update(objects_loss_dict["loss_ce"].item(),vg_batch_size)
+                bbox_loss_m.update(objects_loss_dict["loss_bbox"].item(),vg_batch_size)
+                giou_loss_m.update(objects_loss_dict["loss_giou"].item(),vg_batch_size)
             logit_scale_scalar = logit_scale.item()
             if args.vg_loss_lambda > 0.0 and args.negatives:
                 logging.info(
